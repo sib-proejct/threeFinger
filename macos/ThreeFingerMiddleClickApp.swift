@@ -81,11 +81,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let button = statusItem.button {
             button.image = nil
             button.title = "3F"
-            button.toolTip = "ThreeFingerMiddleClick"
-            button.setAccessibilityLabel("ThreeFingerMiddleClick")
+            button.toolTip = "3F"
+            button.setAccessibilityLabel("3F")
         }
 
-        let menu = NSMenu(title: "ThreeFingerMiddleClick")
+        let menu = NSMenu(title: "3F")
         let openItem = NSMenuItem(title: "Open Status Window", action: #selector(showMainWindow), keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)
@@ -124,11 +124,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        mainWindow.title = "ThreeFingerMiddleClick"
+        mainWindow.title = "3F"
         mainWindow.isReleasedWhenClosed = false
         mainWindow.center()
 
-        let titleLabel = NSTextField(labelWithString: "ThreeFingerMiddleClick")
+        let titleLabel = NSTextField(labelWithString: "3F")
         titleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
 
         let descriptionLabel = NSTextField(wrappingLabelWithString: "Three-finger trackpad taps are converted into middle mouse clicks.")
@@ -431,7 +431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func presentError(_ message: String) {
         let alert = NSAlert()
-        alert.messageText = "ThreeFingerMiddleClick"
+        alert.messageText = "3F"
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
@@ -440,7 +440,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-enum ThreeFingerMiddleClickMain {
+enum ThreeFMain {
     static func main() {
         let application = NSApplication.shared
         let delegate = AppDelegate()

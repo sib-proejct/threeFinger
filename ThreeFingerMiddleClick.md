@@ -1,4 +1,4 @@
-# ThreeFingerMiddleClick 개인용 초경량 설계서
+# 3F 개인용 초경량 설계서
 
 > 목적: macOS에서 트랙패드 **세 손가락 탭**을 **마우스 가운데 클릭**으로 바꾸는 개인용 유틸리티  
 > 구성: **Rust 코어 + 아주 얇은 Swift 메뉴바 앱**  
@@ -43,7 +43,7 @@ Middle Click
 ## 2. 전체 구조
 
 ```text
-ThreeFingerMiddleClick.app
+3F.app
 │
 ├─ Swift
 │  ├─ 메뉴바 아이콘
@@ -110,7 +110,7 @@ Swift 쪽은 최대한 작게 유지한다.
 메뉴바:
 
 ```text
-ThreeFingerMiddleClick
+3F
 
 Enabled            ✓
 Launch at Login    ✓
@@ -347,7 +347,7 @@ Middle Click 이벤트를 다른 앱에 보내기 위해 macOS에서 손쉬운 �
 시스템 설정
 → 개인정보 보호 및 보안
 → 손쉬운 사용
-→ ThreeFingerMiddleClick 허용
+→ 3F 허용
 ```
 
 필요하다면 Input Monitoring 권한도 실제 환경에서 확인한다.
@@ -377,7 +377,7 @@ Launch at Login ✓
 최종 권장 구조:
 
 ```text
-ThreeFingerMiddleClick/
+3F/
 │
 ├─ rust-core/
 │  ├─ Cargo.toml
@@ -471,7 +471,7 @@ Quit
 완성된:
 
 ```text
-ThreeFingerMiddleClick.app
+3F.app
 ```
 
 을:
@@ -485,8 +485,8 @@ ThreeFingerMiddleClick.app
 DMG는 보관이나 이동용으로 만들면 된다.
 
 ```text
-ThreeFingerMiddleClick.dmg
-└─ ThreeFingerMiddleClick.app
+3F.dmg
+└─ 3F.app
 ```
 
 ---

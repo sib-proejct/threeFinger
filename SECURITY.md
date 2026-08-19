@@ -11,5 +11,5 @@ private vulnerability reporting feature for this repository when it is
 available, or contact the repository owner privately. Include the macOS
 version, app version or commit, and enough information to reproduce the issue.
 
-This project intentionally uses an unsupported macOS private framework. Please
+3F intentionally uses an unsupported macOS private framework. Please
 also report crashes or unexpected input behavior after macOS updates.

@@ -3,7 +3,7 @@ set -euo pipefail
 
 project_root="${0:A:h:h}"
 dist_dir="$project_root/dist"
-final_bundle="$dist_dir/ThreeFingerMiddleClick.app"
+final_bundle="$dist_dir/3F.app"
 module_cache="$project_root/target/swift-module-cache"
 clang_module_cache="$project_root/target/clang-module-cache"
 sdk_module_cache="$project_root/target/sdk-module-cache"
@@ -21,10 +21,10 @@ fi
 
 cargo build --release
 mkdir -p "$dist_dir" "$module_cache" "$clang_module_cache" "$sdk_module_cache"
-staging_dir="$(mktemp -d "$dist_dir/.ThreeFingerMiddleClick.build.XXXXXX")"
+staging_dir="$(mktemp -d "$dist_dir/.3F.build.XXXXXX")"
 trap 'rm -rf "$staging_dir"' EXIT
 
-app_bundle="$staging_dir/ThreeFingerMiddleClick.app"
+app_bundle="$staging_dir/3F.app"
 binary_dir="$app_bundle/Contents/MacOS"
 resources_dir="$app_bundle/Contents/Resources"
 iconset_dir="$staging_dir/AppIcon.iconset"
@@ -46,7 +46,7 @@ CLANG_MODULE_CACHE_PATH="$clang_module_cache" swiftc \
   -L target/release \
   -lthree_finger_middle_click \
   macos/ThreeFingerMiddleClickApp.swift \
-  -o "$binary_dir/ThreeFingerMiddleClick"
+  -o "$binary_dir/3F"
 
 # Sign the completed bundle rather than relying on the executable-only ad-hoc
 # signature emitted by the linker. A Developer ID release also enables the
