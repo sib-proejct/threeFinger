@@ -1,0 +1,15 @@
+[package]
+name = "three-finger-middle-click-core"
+version = "0.2.2"
+edition = "2021"
+license = "MIT"
+description = "Three-finger trackpad tap to middle-click engine for macOS"
+
+[lib]
+name = "three_finger_middle_click"
+crate-type = ["staticlib"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
