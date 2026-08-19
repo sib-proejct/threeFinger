@@ -5,6 +5,12 @@ project_root="${0:A:h:h}"
 dist_dir="$project_root/dist"
 final_bundle="$dist_dir/ThreeFingerMiddleClick.app"
 module_cache="$project_root/target/swift-module-cache"
+clang_module_cache="$project_root/target/clang-module-cache"
+sdk_module_cache="$project_root/target/sdk-module-cache"
+# Use an ad-hoc signature for local builds. Set this to a Developer ID
+# Application certificate name for distribution, for example:
+# CODESIGN_IDENTITY='Developer ID Application: Example, Inc. (TEAMID)'
+codesign_identity="${CODESIGN_IDENTITY:--}"
 
 cd "$project_root"
 
@@ -14,7 +20,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 cargo build --release
-mkdir -p "$dist_dir" "$module_cache"
+mkdir -p "$dist_dir" "$module_cache" "$clang_module_cache" "$sdk_module_cache"
 staging_dir="$(mktemp -d "$dist_dir/.ThreeFingerMiddleClick.build.XXXXXX")"
 trap 'rm -rf "$staging_dir"' EXIT
 
@@ -28,10 +34,12 @@ cp macos/Info.plist "$app_bundle/Contents/Info.plist"
 swift scripts/generate-app-icon.swift "$iconset_dir"
 iconutil -c icns "$iconset_dir" -o "$resources_dir/AppIcon.icns"
 
-swiftc \
+CLANG_MODULE_CACHE_PATH="$clang_module_cache" swiftc \
   -parse-as-library \
   -target arm64-apple-macos13.0 \
   -module-cache-path "$module_cache" \
+  -sdk-module-cache-path "$sdk_module_cache" \
+  -clang-scanner-module-cache-path "$clang_module_cache" \
   -framework AppKit \
   -framework ApplicationServices \
   -framework ServiceManagement \
@@ -41,9 +49,14 @@ swiftc \
   -o "$binary_dir/ThreeFingerMiddleClick"
 
 # Sign the completed bundle rather than relying on the executable-only ad-hoc
-# signature emitted by the linker. This seals Info.plist as part of the app and
-# keeps macOS permission and login-item checks consistent.
-codesign --force --deep --sign - "$app_bundle"
+# signature emitted by the linker. A Developer ID release also enables the
+# hardened runtime and a secure timestamp, which are required for notarization.
+codesign_args=(--force --sign "$codesign_identity")
+if [[ "$codesign_identity" != "-" ]]; then
+  codesign_args+=(--options runtime --timestamp)
+fi
+codesign "${codesign_args[@]}" "$app_bundle"
+codesign --verify --deep --strict --verbose=2 "$app_bundle"
 
 rm -rf "$final_bundle"
 mv "$app_bundle" "$final_bundle"

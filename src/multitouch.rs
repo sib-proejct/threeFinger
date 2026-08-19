@@ -39,6 +39,10 @@ struct MTTouch {
 
 const MT_TOUCH_STATE_MAKE_TOUCH: u32 = 3;
 const MT_TOUCH_STATE_TOUCHING: u32 = 4;
+// Apple's built-in trackpads support far fewer simultaneous contacts than
+// this. Keep an explicit upper bound before making a slice from a pointer
+// supplied by an unsupported, private ABI.
+const MAX_CONTACTS_PER_FRAME: usize = 32;
 
 type DeviceRef = *mut c_void;
 type FrameCallback = unsafe extern "C" fn(DeviceRef, *const MTTouch, usize, f64, usize);
@@ -256,6 +260,13 @@ unsafe extern "C" fn contact_frame_callback(
     }
 
     FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    if count > MAX_CONTACTS_PER_FRAME {
+        ACTIVE_CONTACTS.store(0, Ordering::Release);
+        let mut recognizer = recognizer().lock().unwrap_or_else(|e| e.into_inner());
+        recognizer.cancel();
+        return;
+    }
 
     let result = std::panic::catch_unwind(|| {
         let all_touches = if count == 0 {

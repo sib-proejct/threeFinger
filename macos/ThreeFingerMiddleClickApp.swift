@@ -65,9 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         diagnosticsTimer?.invalidate()
-        if let source = physicalClickRunLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
-        }
+        tearDownPhysicalClickTap()
         tmcStop()
     }
 
@@ -203,7 +201,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configurePhysicalClickTapIfPossible() {
-        guard physicalClickTap == nil, AXIsProcessTrusted() else { return }
+        guard physicalClickTap == nil,
+              isEnabled,
+              tmcIsRunning() == 1,
+              AXIsProcessTrusted()
+        else { return }
 
         let mask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
             | CGEventMask(1 << CGEventType.leftMouseUp.rawValue)
@@ -223,6 +225,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         physicalClickRunLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    // Do not keep a global event filter installed while the feature is off.
+    // Besides minimizing the app's input scope, this prevents stale conversion
+    // state from surviving an enable/disable cycle.
+    private func tearDownPhysicalClickTap() {
+        convertingPhysicalClick = false
+        if let tap = physicalClickTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+        }
+        if let source = physicalClickRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+        }
+        physicalClickRunLoopSource = nil
+        physicalClickTap = nil
     }
 
     fileprivate func handlePhysicalClickEvent(
@@ -285,7 +302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(activeContacts, forKey: "diagnosticActiveContacts")
         UserDefaults.standard.set(middleClickCount, forKey: "diagnosticMiddleClickCount")
 
-        if accessibilityAllowed && physicalClickTap == nil {
+        if accessibilityAllowed && isEnabled && tmcIsRunning() == 1 && physicalClickTap == nil {
             configurePhysicalClickTapIfPossible()
         }
     }
@@ -350,6 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applyEnabledState(showError: Bool) {
         if !isEnabled {
+            tearDownPhysicalClickTap()
             tmcStop()
             updateEnabledItem(running: false)
             updateStatus("Disabled")
@@ -362,7 +380,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateEnabledItem(running: running)
         if running {
             updateStatus("Running")
+            configurePhysicalClickTapIfPossible()
         } else {
+            tearDownPhysicalClickTap()
             updateStatus(statusDescription(for: result))
             if showError {
                 presentError(statusDescription(for: result))
