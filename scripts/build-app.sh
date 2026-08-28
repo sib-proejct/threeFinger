@@ -31,7 +31,11 @@ iconset_dir="$staging_dir/AppIcon.iconset"
 mkdir -p "$binary_dir" "$resources_dir"
 cp macos/Info.plist "$app_bundle/Contents/Info.plist"
 
-swift scripts/generate-app-icon.swift "$iconset_dir"
+CLANG_MODULE_CACHE_PATH="$clang_module_cache" swift \
+  -module-cache-path "$module_cache" \
+  -sdk-module-cache-path "$sdk_module_cache" \
+  -clang-scanner-module-cache-path "$clang_module_cache" \
+  scripts/generate-app-icon.swift "$iconset_dir"
 iconutil -c icns "$iconset_dir" -o "$resources_dir/AppIcon.icns"
 
 CLANG_MODULE_CACHE_PATH="$clang_module_cache" swiftc \

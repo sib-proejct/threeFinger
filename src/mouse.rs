@@ -21,6 +21,7 @@ extern "C" {
         mouse_cursor_position: CGPoint,
         mouse_button: u32,
     ) -> CGEventRef;
+    fn CGEventSetIntegerValueField(event: CGEventRef, field: u32, value: i64);
     fn CGEventPost(tap: u32, event: CGEventRef);
     fn CFRelease(cf: *const c_void);
 }
@@ -29,6 +30,9 @@ const KCG_HID_EVENT_TAP: u32 = 0;
 const KCG_EVENT_OTHER_MOUSE_DOWN: u32 = 25;
 const KCG_EVENT_OTHER_MOUSE_UP: u32 = 26;
 const KCG_MOUSE_BUTTON_CENTER: u32 = 2;
+const KCG_EVENT_SOURCE_USER_DATA: u32 = 42;
+/// "3FMC", shared with the Swift input tap to avoid processing our own events.
+const SYNTHETIC_EVENT_MARKER: i64 = 0x3346_4D43;
 
 /// Posts a down/up pair at the current pointer location. macOS may require the
 /// user to allow this app in Privacy & Security > Accessibility.
@@ -49,6 +53,11 @@ pub fn post_middle_click() {
                 KCG_MOUSE_BUTTON_CENTER,
             );
             if !event.is_null() {
+                CGEventSetIntegerValueField(
+                    event,
+                    KCG_EVENT_SOURCE_USER_DATA,
+                    SYNTHETIC_EVENT_MARKER,
+                );
                 CGEventPost(KCG_HID_EVENT_TAP, event);
                 CFRelease(event);
             }

@@ -1,8 +1,18 @@
 //! C ABI exported to the small Swift menu-bar application.
 
+use std::sync::{Mutex, OnceLock};
+
 mod gesture;
 mod mouse;
 mod multitouch;
+
+use gesture::MouseSwipeRecognizer;
+
+static MOUSE_SWIPE_RECOGNIZER: OnceLock<Mutex<MouseSwipeRecognizer>> = OnceLock::new();
+
+fn mouse_swipe_recognizer() -> &'static Mutex<MouseSwipeRecognizer> {
+    MOUSE_SWIPE_RECOGNIZER.get_or_init(|| Mutex::new(MouseSwipeRecognizer::default()))
+}
 
 /// Starts the global three-finger-tap listener.
 ///
@@ -52,4 +62,41 @@ pub extern "C" fn tmc_cancel_gesture() {
 #[no_mangle]
 pub extern "C" fn tmc_record_physical_middle_click() {
     multitouch::record_physical_middle_click();
+}
+
+/// Begins tracking a physical middle-button gesture.
+#[no_mangle]
+pub extern "C" fn tmc_mouse_gesture_begin() {
+    let mut recognizer = mouse_swipe_recognizer()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    recognizer.begin();
+}
+
+/// Observes relative mouse movement. `delta_up` is positive when moving up.
+/// Returns 1 exactly once when Mission Control should be triggered.
+#[no_mangle]
+pub extern "C" fn tmc_mouse_gesture_observe(delta_x: f64, delta_up: f64) -> i32 {
+    let mut recognizer = mouse_swipe_recognizer()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    i32::from(recognizer.observe(delta_x, delta_up))
+}
+
+/// Ends tracking. Returns 1 when the input should be replayed as a click.
+#[no_mangle]
+pub extern "C" fn tmc_mouse_gesture_end() -> i32 {
+    let mut recognizer = mouse_swipe_recognizer()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    i32::from(recognizer.finish())
+}
+
+/// Cancels an in-progress middle-button gesture.
+#[no_mangle]
+pub extern "C" fn tmc_mouse_gesture_cancel() {
+    let mut recognizer = mouse_swipe_recognizer()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    recognizer.cancel();
 }

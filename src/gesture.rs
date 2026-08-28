@@ -10,6 +10,10 @@ pub const DEBOUNCE_MS: f64 = 180.0;
 /// Fingers rarely leave a physical trackpad in the exact same hardware frame.
 /// Allow a short spread between the first and last release.
 pub const MAX_RELEASE_SPREAD_MS: f64 = 80.0;
+/// Upward mouse travel required while the middle button is held.
+pub const MOUSE_SWIPE_UP_THRESHOLD: f64 = 80.0;
+/// Largest movement still treated as a normal middle click.
+pub const MOUSE_CLICK_SLOP: f64 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
@@ -26,6 +30,65 @@ pub struct TapRecognizer {
     release_started_at: Option<f64>,
     invalid: bool,
     last_click_at: Option<f64>,
+}
+
+#[derive(Debug, Default)]
+pub struct MouseSwipeRecognizer {
+    active: bool,
+    accumulated_x: f64,
+    accumulated_up: f64,
+    max_distance: f64,
+    triggered: bool,
+}
+
+impl MouseSwipeRecognizer {
+    pub fn begin(&mut self) {
+        self.active = true;
+        self.accumulated_x = 0.0;
+        self.accumulated_up = 0.0;
+        self.max_distance = 0.0;
+        self.triggered = false;
+    }
+
+    /// Observes relative pointer movement, with positive `delta_up` meaning an
+    /// upward movement. Returns true once when the gesture crosses its
+    /// threshold with a predominantly vertical direction.
+    pub fn observe(&mut self, delta_x: f64, delta_up: f64) -> bool {
+        if !self.active || self.triggered {
+            return false;
+        }
+
+        self.accumulated_x += delta_x;
+        self.accumulated_up += delta_up;
+        self.max_distance = self.max_distance.max(
+            (self.accumulated_x * self.accumulated_x + self.accumulated_up * self.accumulated_up)
+                .sqrt(),
+        );
+
+        if self.accumulated_up >= MOUSE_SWIPE_UP_THRESHOLD
+            && self.accumulated_up >= self.accumulated_x.abs()
+        {
+            self.triggered = true;
+            return true;
+        }
+        false
+    }
+
+    /// Finishes the candidate and returns true when it should be replayed as a
+    /// normal middle click.
+    pub fn finish(&mut self) -> bool {
+        let should_click = self.active && !self.triggered && self.max_distance <= MOUSE_CLICK_SLOP;
+        self.reset();
+        should_click
+    }
+
+    pub fn cancel(&mut self) {
+        self.reset();
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl Default for Point {
@@ -234,5 +297,59 @@ mod tests {
         assert!(recognizer.observe(2.1, &[]));
         assert!(!recognizer.observe(2.15, &THREE));
         assert!(!recognizer.observe(2.2, &[]));
+    }
+
+    #[test]
+    fn mouse_swipe_triggers_at_eighty_points_but_not_seventy_nine() {
+        let mut recognizer = MouseSwipeRecognizer::default();
+        recognizer.begin();
+        assert!(!recognizer.observe(0.0, 79.0));
+        assert!(recognizer.observe(0.0, 1.0));
+    }
+
+    #[test]
+    fn mouse_swipe_rejects_downward_and_horizontal_dominant_motion() {
+        let mut recognizer = MouseSwipeRecognizer::default();
+        recognizer.begin();
+        assert!(!recognizer.observe(0.0, -120.0));
+        assert!(!recognizer.finish());
+
+        recognizer.begin();
+        assert!(!recognizer.observe(81.0, 80.0));
+        assert!(!recognizer.finish());
+    }
+
+    #[test]
+    fn mouse_swipe_triggers_only_once_until_reset() {
+        let mut recognizer = MouseSwipeRecognizer::default();
+        recognizer.begin();
+        assert!(recognizer.observe(0.0, 80.0));
+        assert!(!recognizer.observe(0.0, 80.0));
+        assert!(!recognizer.finish());
+
+        recognizer.begin();
+        assert!(recognizer.observe(0.0, 80.0));
+    }
+
+    #[test]
+    fn mouse_swipe_preserves_only_clicks_inside_the_slop() {
+        let mut recognizer = MouseSwipeRecognizer::default();
+        recognizer.begin();
+        assert!(!recognizer.observe(4.0, 4.0));
+        assert!(recognizer.finish());
+
+        recognizer.begin();
+        assert!(!recognizer.observe(9.0, 0.0));
+        assert!(!recognizer.finish());
+    }
+
+    #[test]
+    fn mouse_swipe_cancel_clears_the_candidate() {
+        let mut recognizer = MouseSwipeRecognizer::default();
+        recognizer.begin();
+        assert!(!recognizer.observe(0.0, 40.0));
+        recognizer.cancel();
+        assert!(!recognizer.observe(0.0, 40.0));
+        assert!(!recognizer.finish());
     }
 }
