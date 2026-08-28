@@ -10,8 +10,15 @@ import ServiceManagement
 @_silgen_name("tmc_middle_click_count") private func tmcMiddleClickCount() -> UInt64
 @_silgen_name("tmc_cancel_gesture") private func tmcCancelGesture()
 @_silgen_name("tmc_record_physical_middle_click") private func tmcRecordPhysicalMiddleClick()
+@_silgen_name("tmc_mouse_gesture_begin") private func tmcMouseGestureBegin()
+@_silgen_name("tmc_mouse_gesture_observe") private func tmcMouseGestureObserve(_ deltaX: Double, _ deltaUp: Double) -> Int32
+@_silgen_name("tmc_mouse_gesture_end") private func tmcMouseGestureEnd() -> Int32
+@_silgen_name("tmc_mouse_gesture_cancel") private func tmcMouseGestureCancel()
 
-private func physicalClickEventCallback(
+private let syntheticEventMarker: Int64 = 0x33464D43 // "3FMC"
+private let centerMouseButtonNumber = Int64(CGMouseButton.center.rawValue)
+
+private func inputEventCallback(
     proxy: CGEventTapProxy,
     type: CGEventType,
     event: CGEvent,
@@ -19,14 +26,16 @@ private func physicalClickEventCallback(
 ) -> Unmanaged<CGEvent>? {
     guard let userInfo else { return Unmanaged.passUnretained(event) }
     let delegate = Unmanaged<AppDelegate>.fromOpaque(userInfo).takeUnretainedValue()
-    return delegate.handlePhysicalClickEvent(type: type, event: event)
+    return delegate.handleInputEvent(type: type, event: event)
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let enabledKey = "enabled"
     private let showDockIconKey = "showDockIcon"
+    private let mouseMissionControlKey = "mouseMiddleSwipeMissionControl"
     private var statusItem: NSStatusItem!
     private var enabledItem: NSMenuItem!
+    private var mouseMissionControlItem: NSMenuItem!
     private var dockIconItem: NSMenuItem!
     private var launchAtLoginItem: NSMenuItem!
     private var statusLineItem: NSMenuItem!
@@ -35,23 +44,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var accessibilityStatusLabel: NSTextField!
     private var diagnosticsLabel: NSTextField!
     private var enabledCheckbox: NSButton!
+    private var mouseMissionControlCheckbox: NSButton!
     private var launchAtLoginCheckbox: NSButton!
-    private var physicalClickTap: CFMachPort?
-    private var physicalClickRunLoopSource: CFRunLoopSource?
+    private var inputEventTap: CFMachPort?
+    private var inputEventRunLoopSource: CFRunLoopSource?
     private var convertingPhysicalClick = false
+    private var trackingMiddleGesture = false
+    private var middleGestureClickState: Int64 = 1
+    private var middleGestureEventNumber: Int64 = 0
+    private var trackpadStartResult: Int32 = 0
     private var diagnosticsTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if UserDefaults.standard.object(forKey: enabledKey) == nil {
+            UserDefaults.standard.set(true, forKey: enabledKey)
+        }
+        if UserDefaults.standard.object(forKey: mouseMissionControlKey) == nil {
+            UserDefaults.standard.set(true, forKey: mouseMissionControlKey)
+        }
+
         configureWindow()
         configureMenu()
         applyDockIconVisibility()
         requestAccessibilityPermissionIfNeeded()
 
-        if UserDefaults.standard.object(forKey: enabledKey) == nil {
-            UserDefaults.standard.set(true, forKey: enabledKey)
-        }
         applyEnabledState(showError: false)
-        configurePhysicalClickTapIfPossible()
+        configureInputEventTapIfPossible()
         diagnosticsTimer = Timer.scheduledTimer(
             timeInterval: 0.5,
             target: self,
@@ -65,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         diagnosticsTimer?.invalidate()
-        tearDownPhysicalClickTap()
+        tearDownInputEventTap()
         tmcStop()
     }
 
@@ -95,6 +113,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         enabledItem.target = self
         menu.addItem(enabledItem)
 
+        mouseMissionControlItem = NSMenuItem(
+            title: "Middle-button swipe: Mission Control",
+            action: #selector(toggleMouseMissionControl),
+            keyEquivalent: ""
+        )
+        mouseMissionControlItem.target = self
+        menu.addItem(mouseMissionControlItem)
+
         launchAtLoginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         launchAtLoginItem.target = self
         menu.addItem(launchAtLoginItem)
@@ -113,13 +139,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quitItem.target = self
         menu.addItem(quitItem)
         statusItem.menu = menu
+        updateMouseMissionControlControls()
         updateLaunchAtLoginItem()
         updateDockIconItem()
     }
 
     private func configureWindow() {
         mainWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 350),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 390),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -131,7 +158,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let titleLabel = NSTextField(labelWithString: "3F")
         titleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
 
-        let descriptionLabel = NSTextField(wrappingLabelWithString: "Three-finger trackpad taps are converted into middle mouse clicks.")
+        let descriptionLabel = NSTextField(
+            wrappingLabelWithString: "Three-finger trackpad taps become middle clicks. Hold the mouse middle button and move up to open Mission Control."
+        )
         descriptionLabel.textColor = .secondaryLabelColor
 
         windowStatusLabel = NSTextField(labelWithString: "Status: Starting…")
@@ -146,6 +175,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             checkboxWithTitle: "Enabled",
             target: self,
             action: #selector(toggleEnabledFromWindow)
+        )
+        mouseMissionControlCheckbox = NSButton(
+            checkboxWithTitle: "Middle-button swipe: Mission Control",
+            target: self,
+            action: #selector(toggleMouseMissionControlFromWindow)
         )
         launchAtLoginCheckbox = NSButton(
             checkboxWithTitle: "Launch at Login",
@@ -173,6 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             accessibilityStatusLabel,
             diagnosticsLabel,
             enabledCheckbox,
+            mouseMissionControlCheckbox,
             launchAtLoginCheckbox,
             permissionButton,
             helpLabel,
@@ -200,29 +235,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func configurePhysicalClickTapIfPossible() {
-        guard physicalClickTap == nil,
+    private func configureInputEventTapIfPossible() {
+        guard inputEventTap == nil,
               isEnabled,
-              tmcIsRunning() == 1,
-              AXIsProcessTrusted()
+              AXIsProcessTrusted(),
+              tmcIsRunning() == 1 || isMouseMissionControlEnabled
         else { return }
 
         let mask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
             | CGEventMask(1 << CGEventType.leftMouseUp.rawValue)
             | CGEventMask(1 << CGEventType.leftMouseDragged.rawValue)
+            | CGEventMask(1 << CGEventType.otherMouseDown.rawValue)
+            | CGEventMask(1 << CGEventType.otherMouseUp.rawValue)
+            | CGEventMask(1 << CGEventType.otherMouseDragged.rawValue)
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: mask,
-            callback: physicalClickEventCallback,
+            callback: inputEventCallback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else { return }
 
-        physicalClickTap = tap
+        inputEventTap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        physicalClickRunLoopSource = source
+        inputEventRunLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
     }
@@ -230,27 +268,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Do not keep a global event filter installed while the feature is off.
     // Besides minimizing the app's input scope, this prevents stale conversion
     // state from surviving an enable/disable cycle.
-    private func tearDownPhysicalClickTap() {
+    private func tearDownInputEventTap() {
         convertingPhysicalClick = false
-        if let tap = physicalClickTap {
+        cancelMiddleGesture()
+        if let tap = inputEventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
         }
-        if let source = physicalClickRunLoopSource {
+        if let source = inputEventRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
         }
-        physicalClickRunLoopSource = nil
-        physicalClickTap = nil
+        inputEventRunLoopSource = nil
+        inputEventTap = nil
     }
 
-    fileprivate func handlePhysicalClickEvent(
+    fileprivate func handleInputEvent(
         type: CGEventType,
         event: CGEvent
     ) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap = physicalClickTap {
+            if let tap = inputEventTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
             convertingPhysicalClick = false
+            cancelMiddleGesture()
+            return Unmanaged.passUnretained(event)
+        }
+
+        if event.getIntegerValueField(.eventSourceUserData) == syntheticEventMarker {
             return Unmanaged.passUnretained(event)
         }
 
@@ -274,10 +318,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return nil
         }
 
+        let buttonNumber = event.getIntegerValueField(.mouseEventButtonNumber)
+        if isEnabled,
+           isMouseMissionControlEnabled,
+           buttonNumber == centerMouseButtonNumber {
+            if type == .otherMouseDown {
+                trackingMiddleGesture = true
+                middleGestureClickState = event.getIntegerValueField(.mouseEventClickState)
+                middleGestureEventNumber = event.getIntegerValueField(.mouseEventNumber)
+                tmcMouseGestureBegin()
+                return nil
+            }
+
+            if trackingMiddleGesture && type == .otherMouseDragged {
+                let deltaX = Double(event.getIntegerValueField(.mouseEventDeltaX))
+                let deltaUp = -Double(event.getIntegerValueField(.mouseEventDeltaY))
+                if tmcMouseGestureObserve(deltaX, deltaUp) == 1 {
+                    triggerMissionControl()
+                }
+                return nil
+            }
+
+            if trackingMiddleGesture && type == .otherMouseUp {
+                let shouldReplayClick = tmcMouseGestureEnd() == 1
+                trackingMiddleGesture = false
+                if shouldReplayClick {
+                    postPhysicalMiddleEvent(
+                        .otherMouseDown,
+                        from: event,
+                        clickState: middleGestureClickState,
+                        eventNumber: middleGestureEventNumber
+                    )
+                    postPhysicalMiddleEvent(
+                        .otherMouseUp,
+                        from: event,
+                        clickState: middleGestureClickState,
+                        eventNumber: middleGestureEventNumber
+                    )
+                }
+                return nil
+            }
+        }
+
         return Unmanaged.passUnretained(event)
     }
 
-    private func postPhysicalMiddleEvent(_ type: CGEventType, from event: CGEvent) {
+    private func cancelMiddleGesture() {
+        trackingMiddleGesture = false
+        tmcMouseGestureCancel()
+    }
+
+    private func postPhysicalMiddleEvent(
+        _ type: CGEventType,
+        from event: CGEvent,
+        clickState: Int64? = nil,
+        eventNumber: Int64? = nil
+    ) {
         guard let middleEvent = CGEvent(
             mouseEventSource: nil,
             mouseType: type,
@@ -285,7 +381,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             mouseButton: .center
         ) else { return }
         middleEvent.flags = event.flags
+        middleEvent.setIntegerValueField(
+            .mouseEventClickState,
+            value: clickState ?? event.getIntegerValueField(.mouseEventClickState)
+        )
+        middleEvent.setIntegerValueField(
+            .mouseEventNumber,
+            value: eventNumber ?? event.getIntegerValueField(.mouseEventNumber)
+        )
+        middleEvent.setIntegerValueField(.eventSourceUserData, value: syntheticEventMarker)
         middleEvent.post(tap: .cghidEventTap)
+    }
+
+    private func triggerMissionControl() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard let url = NSWorkspace.shared.urlForApplication(
+                withBundleIdentifier: "com.apple.exposelauncher"
+            ) else {
+                self.postMissionControlShortcut()
+                return
+            }
+
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            NSWorkspace.shared.openApplication(
+                at: url,
+                configuration: configuration
+            ) { _, error in
+                if error != nil {
+                    self.postMissionControlShortcut()
+                }
+            }
+        }
+    }
+
+    private func postMissionControlShortcut() {
+        let upArrowKeyCode: CGKeyCode = 126
+        for keyDown in [true, false] {
+            guard let keyEvent = CGEvent(
+                keyboardEventSource: nil,
+                virtualKey: upArrowKeyCode,
+                keyDown: keyDown
+            ) else { continue }
+            keyEvent.flags = .maskControl
+            keyEvent.post(tap: .cghidEventTap)
+        }
     }
 
     @objc private func refreshDiagnostics() {
@@ -302,9 +443,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(activeContacts, forKey: "diagnosticActiveContacts")
         UserDefaults.standard.set(middleClickCount, forKey: "diagnosticMiddleClickCount")
 
-        if accessibilityAllowed && isEnabled && tmcIsRunning() == 1 && physicalClickTap == nil {
-            configurePhysicalClickTapIfPossible()
+        if let tap = inputEventTap,
+           !accessibilityAllowed || !CGEvent.tapIsEnabled(tap: tap) {
+            tearDownInputEventTap()
         }
+
+        if accessibilityAllowed,
+           isEnabled,
+           inputEventTap == nil,
+           tmcIsRunning() == 1 || isMouseMissionControlEnabled {
+            configureInputEventTapIfPossible()
+        }
+        updateOperationalStatus()
     }
 
     @objc private func toggleEnabled() {
@@ -315,6 +465,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleEnabledFromWindow() {
         UserDefaults.standard.set(enabledCheckbox.state == .on, forKey: enabledKey)
         applyEnabledState(showError: true)
+    }
+
+    @objc private func toggleMouseMissionControl() {
+        UserDefaults.standard.set(!isMouseMissionControlEnabled, forKey: mouseMissionControlKey)
+        applyMouseMissionControlSetting()
+    }
+
+    @objc private func toggleMouseMissionControlFromWindow() {
+        UserDefaults.standard.set(
+            mouseMissionControlCheckbox.state == .on,
+            forKey: mouseMissionControlKey
+        )
+        applyMouseMissionControlSetting()
+    }
+
+    private func applyMouseMissionControlSetting() {
+        tearDownInputEventTap()
+        updateMouseMissionControlControls()
+        if isEnabled {
+            configureInputEventTapIfPossible()
+        }
+        updateOperationalStatus()
     }
 
     @objc private func toggleLaunchAtLogin() {
@@ -352,6 +524,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.bool(forKey: enabledKey)
     }
 
+    private var isMouseMissionControlEnabled: Bool {
+        UserDefaults.standard.bool(forKey: mouseMissionControlKey)
+    }
+
+    private var isInputEventTapActive: Bool {
+        guard let tap = inputEventTap else { return false }
+        return CGEvent.tapIsEnabled(tap: tap)
+    }
+
     private var showDockIcon: Bool {
         UserDefaults.standard.bool(forKey: showDockIconKey)
     }
@@ -367,26 +548,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applyEnabledState(showError: Bool) {
         if !isEnabled {
-            tearDownPhysicalClickTap()
+            tearDownInputEventTap()
             tmcStop()
             updateEnabledItem(running: false)
+            updateMouseMissionControlControls()
             updateStatus("Disabled")
             return
         }
 
-        let result = tmcStart()
-        UserDefaults.standard.set(result, forKey: "diagnosticStartResult")
-        let running = result == 1 && tmcIsRunning() == 1
-        updateEnabledItem(running: running)
-        if running {
+        trackpadStartResult = tmcStart()
+        UserDefaults.standard.set(trackpadStartResult, forKey: "diagnosticStartResult")
+        configureInputEventTapIfPossible()
+        updateMouseMissionControlControls()
+        updateOperationalStatus()
+
+        let anyFeatureRunning = tmcIsRunning() == 1
+            || (isMouseMissionControlEnabled && isInputEventTapActive)
+        if showError && !anyFeatureRunning && trackpadStartResult != 1 {
+            presentError(statusDescription(for: trackpadStartResult))
+        }
+    }
+
+    private func updateOperationalStatus() {
+        guard isEnabled else { return }
+
+        let accessibilityAllowed = AXIsProcessTrusted()
+        let trackpadRunning = tmcIsRunning() == 1
+        let mouseGestureRunning = isMouseMissionControlEnabled && isInputEventTapActive
+        updateEnabledItem(
+            running: (trackpadRunning && accessibilityAllowed) || mouseGestureRunning
+        )
+
+        if !accessibilityAllowed {
+            let suffix = trackpadRunning ? "" : " · Trackpad unavailable"
+            updateStatus("Accessibility required\(suffix)")
+        } else if trackpadRunning {
             updateStatus("Running")
-            configurePhysicalClickTapIfPossible()
+        } else if mouseGestureRunning {
+            updateStatus("Mouse gesture active · Trackpad unavailable")
         } else {
-            tearDownPhysicalClickTap()
-            updateStatus(statusDescription(for: result))
-            if showError {
-                presentError(statusDescription(for: result))
-            }
+            updateStatus(statusDescription(for: trackpadStartResult))
         }
     }
 
@@ -394,6 +595,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         enabledItem.state = isEnabled ? .on : .off
         enabledCheckbox.state = isEnabled ? .on : .off
         statusItem.button?.appearsDisabled = !running
+    }
+
+    private func updateMouseMissionControlControls() {
+        let state: NSControl.StateValue = isMouseMissionControlEnabled ? .on : .off
+        mouseMissionControlItem?.state = state
+        mouseMissionControlCheckbox?.state = state
+        mouseMissionControlItem?.isEnabled = isEnabled
+        mouseMissionControlCheckbox?.isEnabled = isEnabled
     }
 
     private func updateStatus(_ status: String) {

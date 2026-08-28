@@ -1,7 +1,8 @@
 # 3F
 
 Personal macOS utility that converts a **three-finger tap or physical click** on
-the built-in trackpad into a middle mouse click (scroll-wheel click).
+the built-in trackpad into a middle mouse click, and a **middle-button upward
+mouse gesture** into Mission Control.
 
 ## What it does
 
@@ -12,7 +13,12 @@ the built-in trackpad into a middle mouse click (scroll-wheel click).
 - Converts a physical three-finger trackpad click from left-click down/up events
   into middle-button down/up events, suppressing the original left click.
 - Posts a Core Graphics middle-click at the current cursor location.
-- Provides a small menu-bar menu for Enabled, Launch at Login, and Quit.
+- Hold the physical mouse middle button and move upward at least 80 points to
+  open Mission Control. The pointer stays at the moved position. A click within
+  8 points remains a normal middle click; middle-button drags are reserved for
+  this gesture while the option is enabled.
+- Provides a small menu-bar menu for Enabled, the mouse gesture, Launch at Login,
+  and Quit.
 
 `MultitouchSupport` is a private macOS framework. This is deliberately a
 personal-use utility and may need adjustment after macOS updates.
@@ -20,14 +26,16 @@ personal-use utility and may need adjustment after macOS updates.
 ## Privacy and security
 
 - The app reads raw built-in-trackpad contact frames only while **Enabled**.
-  It installs its global left-click event filter only while the feature is
-  running, and removes it when disabled or when the app quits.
+  It installs its global mouse event filter only while an input feature is
+  running, and removes it when disabled or when the app quits. The mouse gesture
+  can remain available if no trackpad is present.
 - Contact positions, mouse events, and diagnostics are not written to files or
-  sent over the network. The only persisted values are the Enabled / Dock-icon
-  preferences and aggregate diagnostics shown in the status window.
-- Accessibility permission is required because the app suppresses a qualifying
-  physical left click and posts a middle click in its place. Review that
-  permission before granting it, and disable the app when it is not needed.
+  sent over the network. The only persisted values are preferences for Enabled,
+  the mouse gesture, and the Dock icon, plus aggregate diagnostics shown in the
+  status window.
+- Accessibility permission is required because the app suppresses qualifying
+  mouse events and posts replacement input. Review that permission before
+  granting it, and disable the app when it is not needed.
 - `MultitouchSupport` is a private, unsupported framework. Its ABI may change
   in a macOS update; this app is not suitable for the Mac App Store and Apple
   does not guarantee its continued operation.
@@ -90,7 +98,8 @@ framework will keep working in future macOS releases.
    **Open**. Allow **Accessibility** access when prompted.
 5. A status window opens on launch. It shows whether the engine is running,
    Accessibility permission, received input frames, active fingers, and generated
-   middle clicks. It also provides **Enabled** and **Launch at Login** controls.
+   middle clicks. It also provides **Enabled**, **Middle-button swipe: Mission
+   Control**, and **Launch at Login** controls.
 6. Closing the window leaves the app running. Reopen it from the `3F` item in
    the upper-right menu bar. The Dock icon is hidden by default; toggle
    **Show Dock Icon** in the `3F` menu if you want it visible.
@@ -114,8 +123,8 @@ make test
 swiftc -parse-as-library -typecheck -target arm64-apple-macos13.0 macos/ThreeFingerMiddleClickApp.swift
 ```
 
-The three gesture thresholds are intentionally source constants in
-`src/gesture.rs`; there is no settings window.
+The gesture thresholds are intentionally fixed source constants in
+`src/gesture.rs`.
 
 If Swift reports that its SDK and compiler versions do not match, install or
 select a matching Xcode / Command Line Tools pair before building the app.
@@ -136,7 +145,8 @@ This project was created with assistance from GPT-5.6 Sol and GPT-5.6 Terra.
 ## 한국어 안내
 
 3F는 내장 트랙패드의 **세 손가락 탭 또는 물리 클릭**을 마우스 가운데
-클릭(휠 클릭)으로 바꾸는 개인용 macOS 유틸리티입니다.
+클릭(휠 클릭)으로 바꾸고, **마우스 가운데 버튼 위쪽 제스처**로 Mission
+Control을 여는 개인용 macOS 유틸리티입니다.
 
 ### 기능
 
@@ -148,7 +158,12 @@ This project was created with assistance from GPT-5.6 Sol and GPT-5.6 Terra.
 - 세 손가락으로 트랙패드를 실제로 누르면 원래 좌클릭을 막고 가운데
   버튼 down/up 이벤트로 바꿉니다.
 - 현재 커서 위치에 Core Graphics 가운데 클릭을 전송합니다.
-- 메뉴 막대에서 **Enabled**, **Launch at Login**, **Quit**을 제공합니다.
+- 마우스 가운데 버튼을 누른 채 위로 80pt 이상 움직이면 Mission Control을
+  열고 커서는 이동한 위치에 그대로 둡니다. 8pt 이내의 움직임은 일반
+  가운데 클릭으로 유지되며, 옵션이 켜진 동안 가운데 버튼 드래그는 이
+  제스처 전용입니다.
+- 메뉴 막대에서 **Enabled**, 마우스 제스처, **Launch at Login**, **Quit**을
+  제공합니다.
 
 `MultitouchSupport`는 macOS의 비공개 프레임워크입니다. 이 앱은 개인용을
 목적으로 하며, macOS 업데이트 뒤에 동작이 달라지거나 중단될 수 있습니다.
@@ -156,12 +171,13 @@ This project was created with assistance from GPT-5.6 Sol and GPT-5.6 Terra.
 ### 개인정보 및 보안
 
 - **Enabled** 상태일 때만 원시 트랙패드 접촉 프레임을 읽습니다. 전역
-  좌클릭 이벤트 필터도 기능이 실행 중일 때만 설치하며, 비활성화하거나
-  앱을 종료하면 제거합니다.
+  마우스 이벤트 필터도 입력 기능이 실행 중일 때만 설치하며, 비활성화하거나
+  앱을 종료하면 제거합니다. 트랙패드가 없어도 마우스 제스처는 독립적으로
+  사용할 수 있습니다.
 - 접촉 좌표, 마우스 이벤트, 진단 정보는 파일에 기록하거나 네트워크로
-  전송하지 않습니다. Enabled/Dock 아이콘 설정과 상태 창에 표시할 집계
-  진단값만 저장합니다.
-- 이 앱은 해당 좌클릭을 막고 가운데 클릭으로 바꾸므로 손쉬운 사용
+  전송하지 않습니다. Enabled/마우스 제스처/Dock 아이콘 설정과 상태 창에
+  표시할 집계 진단값만 저장합니다.
+- 이 앱은 해당 마우스 이벤트를 막고 대체 입력을 전송하므로 손쉬운 사용
   권한이 필요합니다. 권한의 용도를 확인한 뒤 허용하고, 사용하지 않을 때는
   앱을 비활성화하세요.
 - 비공개·미지원 프레임워크에 의존하므로 Mac App Store 배포용이 아니며,
@@ -202,8 +218,9 @@ make dmg
 4. macOS가 첫 실행을 막으면 Finder에서 앱을 Control-클릭하고 **열기**를
    선택한 다음, 손쉬운 사용 권한을 허용합니다.
 5. 상태 창에서 엔진 실행 상태, 손쉬운 사용 권한, 수신된 입력 프레임,
-   활성 손가락 수, 생성된 가운데 클릭 수를 확인하고 **Enabled** 및
-   **Launch at Login**을 제어할 수 있습니다.
+   활성 손가락 수, 생성된 가운데 클릭 수를 확인하고 **Enabled**,
+   **Middle-button swipe: Mission Control**, **Launch at Login**을 제어할 수
+   있습니다.
 6. 창을 닫아도 앱은 계속 실행됩니다. 화면 오른쪽 상단의 `3F` 메뉴 막대
    항목으로 다시 열 수 있습니다. Dock 아이콘은 기본적으로 숨겨져 있으며,
    필요하면 `3F` 메뉴에서 **Show Dock Icon**을 켜세요.
@@ -249,8 +266,8 @@ make test
 swiftc -parse-as-library -typecheck -target arm64-apple-macos13.0 macos/ThreeFingerMiddleClickApp.swift
 ```
 
-세 가지 제스처 임계값은 의도적으로 `src/gesture.rs`의 소스 상수로 두었으며,
-설정 창은 제공하지 않습니다. Swift에서 SDK와 컴파일러 버전이 맞지 않는다고
+제스처 임계값은 의도적으로 `src/gesture.rs`의 고정 소스 상수로 두었습니다.
+Swift에서 SDK와 컴파일러 버전이 맞지 않는다고
 보고하면, 일치하는 Xcode 또는 Command Line Tools 조합을 설치하거나 선택하세요.
 
 ### 라이선스
