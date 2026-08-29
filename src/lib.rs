@@ -6,12 +6,17 @@ mod gesture;
 mod mouse;
 mod multitouch;
 
-use gesture::MouseSwipeRecognizer;
+use gesture::{AutoScrollEngine, MouseSwipeRecognizer};
 
 static MOUSE_SWIPE_RECOGNIZER: OnceLock<Mutex<MouseSwipeRecognizer>> = OnceLock::new();
+static AUTO_SCROLL_ENGINE: OnceLock<Mutex<AutoScrollEngine>> = OnceLock::new();
 
 fn mouse_swipe_recognizer() -> &'static Mutex<MouseSwipeRecognizer> {
     MOUSE_SWIPE_RECOGNIZER.get_or_init(|| Mutex::new(MouseSwipeRecognizer::default()))
+}
+
+fn auto_scroll_engine() -> &'static Mutex<AutoScrollEngine> {
+    AUTO_SCROLL_ENGINE.get_or_init(|| Mutex::new(AutoScrollEngine::default()))
 }
 
 /// Starts the global three-finger-tap listener.
@@ -99,4 +104,46 @@ pub extern "C" fn tmc_mouse_gesture_cancel() {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     recognizer.cancel();
+}
+
+/// Starts a new middle-button automatic-scroll session.
+#[no_mangle]
+pub extern "C" fn tmc_auto_scroll_begin() {
+    let mut engine = auto_scroll_engine()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    engine.begin();
+}
+
+/// Computes whole-pixel scroll deltas for one timer frame.
+/// Positive offsets point right/down. Null output pointers are allowed.
+#[no_mangle]
+pub extern "C" fn tmc_auto_scroll_step(
+    offset_x: f64,
+    offset_y: f64,
+    elapsed_seconds: f64,
+    out_x: *mut i32,
+    out_y: *mut i32,
+) {
+    let mut engine = auto_scroll_engine()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let (delta_x, delta_y) = engine.step(offset_x, offset_y, elapsed_seconds);
+    unsafe {
+        if let Some(out_x) = out_x.as_mut() {
+            *out_x = delta_x;
+        }
+        if let Some(out_y) = out_y.as_mut() {
+            *out_y = delta_y;
+        }
+    }
+}
+
+/// Ends automatic scrolling and clears fractional state.
+#[no_mangle]
+pub extern "C" fn tmc_auto_scroll_end() {
+    let mut engine = auto_scroll_engine()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    engine.end();
 }

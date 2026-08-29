@@ -14,9 +14,62 @@ import ServiceManagement
 @_silgen_name("tmc_mouse_gesture_observe") private func tmcMouseGestureObserve(_ deltaX: Double, _ deltaUp: Double) -> Int32
 @_silgen_name("tmc_mouse_gesture_end") private func tmcMouseGestureEnd() -> Int32
 @_silgen_name("tmc_mouse_gesture_cancel") private func tmcMouseGestureCancel()
+@_silgen_name("tmc_auto_scroll_begin") private func tmcAutoScrollBegin()
+@_silgen_name("tmc_auto_scroll_step") private func tmcAutoScrollStep(
+    _ offsetX: Double,
+    _ offsetY: Double,
+    _ elapsedSeconds: Double,
+    _ outX: UnsafeMutablePointer<Int32>,
+    _ outY: UnsafeMutablePointer<Int32>
+)
+@_silgen_name("tmc_auto_scroll_end") private func tmcAutoScrollEnd()
 
 private let syntheticEventMarker: Int64 = 0x33464D43 // "3FMC"
 private let centerMouseButtonNumber = Int64(CGMouseButton.center.rawValue)
+private let escapeKeyCode: Int64 = 53
+
+private final class AutoScrollIndicatorView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        let circle = bounds.insetBy(dx: 1.5, dy: 1.5)
+        NSColor.windowBackgroundColor.withAlphaComponent(0.94).setFill()
+        NSBezierPath(ovalIn: circle).fill()
+        NSColor.secondaryLabelColor.setStroke()
+        let outline = NSBezierPath(ovalIn: circle)
+        outline.lineWidth = 1.5
+        outline.stroke()
+
+        let arrows = NSBezierPath()
+        arrows.lineWidth = 1.5
+        arrows.lineCapStyle = .round
+        arrows.lineJoinStyle = .round
+        for angle in stride(from: 0.0, to: 360.0, by: 90.0) {
+            let radians = angle * .pi / 180.0
+            let center = NSPoint(x: bounds.midX, y: bounds.midY)
+            let tip = NSPoint(
+                x: center.x + cos(radians) * 9,
+                y: center.y + sin(radians) * 9
+            )
+            let base = NSPoint(
+                x: center.x + cos(radians) * 4,
+                y: center.y + sin(radians) * 4
+            )
+            arrows.move(to: base)
+            arrows.line(to: tip)
+            arrows.move(to: tip)
+            arrows.relativeLine(to: NSPoint(
+                x: cos(radians + 2.45) * 3.5,
+                y: sin(radians + 2.45) * 3.5
+            ))
+            arrows.move(to: tip)
+            arrows.relativeLine(to: NSPoint(
+                x: cos(radians - 2.45) * 3.5,
+                y: sin(radians - 2.45) * 3.5
+            ))
+        }
+        NSColor.labelColor.setStroke()
+        arrows.stroke()
+    }
+}
 
 private func inputEventCallback(
     proxy: CGEventTapProxy,
@@ -33,9 +86,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let enabledKey = "enabled"
     private let showDockIconKey = "showDockIcon"
     private let mouseMissionControlKey = "mouseMiddleSwipeMissionControl"
+    private let mouseAutoScrollKey = "mouseMiddleAutoScroll"
     private var statusItem: NSStatusItem!
     private var enabledItem: NSMenuItem!
     private var mouseMissionControlItem: NSMenuItem!
+    private var mouseAutoScrollItem: NSMenuItem!
     private var dockIconItem: NSMenuItem!
     private var launchAtLoginItem: NSMenuItem!
     private var statusLineItem: NSMenuItem!
@@ -45,6 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var diagnosticsLabel: NSTextField!
     private var enabledCheckbox: NSButton!
     private var mouseMissionControlCheckbox: NSButton!
+    private var mouseAutoScrollCheckbox: NSButton!
     private var launchAtLoginCheckbox: NSButton!
     private var inputEventTap: CFMachPort?
     private var inputEventRunLoopSource: CFRunLoopSource?
@@ -52,6 +108,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var trackingMiddleGesture = false
     private var middleGestureClickState: Int64 = 1
     private var middleGestureEventNumber: Int64 = 0
+    private var middleGestureQuartzLocation = CGPoint.zero
+    private var middleGestureScreenLocation = NSPoint.zero
+    private var autoScrollTimer: Timer?
+    private var autoScrollAnchor = NSPoint.zero
+    private var autoScrollLastTick: TimeInterval = 0
+    private var autoScrollIndicator: NSPanel?
+    private var cancellingAutoScrollButton: Int64?
     private var trackpadStartResult: Int32 = 0
     private var diagnosticsTimer: Timer?
 
@@ -61,6 +124,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if UserDefaults.standard.object(forKey: mouseMissionControlKey) == nil {
             UserDefaults.standard.set(true, forKey: mouseMissionControlKey)
+        }
+        if UserDefaults.standard.object(forKey: mouseAutoScrollKey) == nil {
+            UserDefaults.standard.set(true, forKey: mouseAutoScrollKey)
         }
 
         configureWindow()
@@ -83,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         diagnosticsTimer?.invalidate()
+        stopAutoScroll()
         tearDownInputEventTap()
         tmcStop()
     }
@@ -121,6 +188,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mouseMissionControlItem.target = self
         menu.addItem(mouseMissionControlItem)
 
+        mouseAutoScrollItem = NSMenuItem(
+            title: "Middle-button click: Auto Scroll",
+            action: #selector(toggleMouseAutoScroll),
+            keyEquivalent: ""
+        )
+        mouseAutoScrollItem.target = self
+        menu.addItem(mouseAutoScrollItem)
+
         launchAtLoginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         launchAtLoginItem.target = self
         menu.addItem(launchAtLoginItem)
@@ -139,14 +214,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quitItem.target = self
         menu.addItem(quitItem)
         statusItem.menu = menu
-        updateMouseMissionControlControls()
+        updateMouseFeatureControls()
         updateLaunchAtLoginItem()
         updateDockIconItem()
     }
 
     private func configureWindow() {
         mainWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 390),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 430),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -159,7 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         titleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
 
         let descriptionLabel = NSTextField(
-            wrappingLabelWithString: "Three-finger trackpad taps become middle clicks. Hold the mouse middle button and move up to open Mission Control."
+            wrappingLabelWithString: "Three-finger trackpad taps become middle clicks. A physical middle click starts automatic scrolling away from links; hold and move up to open Mission Control."
         )
         descriptionLabel.textColor = .secondaryLabelColor
 
@@ -180,6 +255,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             checkboxWithTitle: "Middle-button swipe: Mission Control",
             target: self,
             action: #selector(toggleMouseMissionControlFromWindow)
+        )
+        mouseAutoScrollCheckbox = NSButton(
+            checkboxWithTitle: "Middle-button click: Auto Scroll",
+            target: self,
+            action: #selector(toggleMouseAutoScrollFromWindow)
         )
         launchAtLoginCheckbox = NSButton(
             checkboxWithTitle: "Launch at Login",
@@ -208,6 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             diagnosticsLabel,
             enabledCheckbox,
             mouseMissionControlCheckbox,
+            mouseAutoScrollCheckbox,
             launchAtLoginCheckbox,
             permissionButton,
             helpLabel,
@@ -239,15 +320,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard inputEventTap == nil,
               isEnabled,
               AXIsProcessTrusted(),
-              tmcIsRunning() == 1 || isMouseMissionControlEnabled
+              tmcIsRunning() == 1 || isMouseMissionControlEnabled || isMouseAutoScrollEnabled
         else { return }
 
         let mask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
             | CGEventMask(1 << CGEventType.leftMouseUp.rawValue)
             | CGEventMask(1 << CGEventType.leftMouseDragged.rawValue)
+            | CGEventMask(1 << CGEventType.rightMouseDown.rawValue)
+            | CGEventMask(1 << CGEventType.rightMouseUp.rawValue)
             | CGEventMask(1 << CGEventType.otherMouseDown.rawValue)
             | CGEventMask(1 << CGEventType.otherMouseUp.rawValue)
             | CGEventMask(1 << CGEventType.otherMouseDragged.rawValue)
+            | CGEventMask(1 << CGEventType.keyDown.rawValue)
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -271,6 +355,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func tearDownInputEventTap() {
         convertingPhysicalClick = false
         cancelMiddleGesture()
+        stopAutoScroll()
+        cancellingAutoScrollButton = nil
         if let tap = inputEventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
         }
@@ -298,6 +384,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return Unmanaged.passUnretained(event)
         }
 
+        if let cancelledButton = cancellingAutoScrollButton,
+           isMouseUp(type),
+           event.getIntegerValueField(.mouseEventButtonNumber) == cancelledButton {
+            cancellingAutoScrollButton = nil
+            return nil
+        }
+
+        if isAutoScrolling {
+            if type == .keyDown,
+               event.getIntegerValueField(.keyboardEventKeycode) == escapeKeyCode {
+                stopAutoScroll()
+                return nil
+            }
+            if isMouseDown(type) {
+                cancellingAutoScrollButton = event.getIntegerValueField(.mouseEventButtonNumber)
+                stopAutoScroll()
+                return nil
+            }
+        }
+
         if type == .leftMouseDown,
            tmcIsRunning() == 1,
            tmcActiveContactCount() == 3 {
@@ -320,12 +426,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let buttonNumber = event.getIntegerValueField(.mouseEventButtonNumber)
         if isEnabled,
-           isMouseMissionControlEnabled,
+           isMouseMissionControlEnabled || isMouseAutoScrollEnabled,
            buttonNumber == centerMouseButtonNumber {
             if type == .otherMouseDown {
                 trackingMiddleGesture = true
                 middleGestureClickState = event.getIntegerValueField(.mouseEventClickState)
                 middleGestureEventNumber = event.getIntegerValueField(.mouseEventNumber)
+                middleGestureQuartzLocation = event.location
+                middleGestureScreenLocation = NSEvent.mouseLocation
                 tmcMouseGestureBegin()
                 return nil
             }
@@ -333,7 +441,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if trackingMiddleGesture && type == .otherMouseDragged {
                 let deltaX = Double(event.getIntegerValueField(.mouseEventDeltaX))
                 let deltaUp = -Double(event.getIntegerValueField(.mouseEventDeltaY))
-                if tmcMouseGestureObserve(deltaX, deltaUp) == 1 {
+                if tmcMouseGestureObserve(deltaX, deltaUp) == 1,
+                   isMouseMissionControlEnabled {
                     triggerMissionControl()
                 }
                 return nil
@@ -343,18 +452,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let shouldReplayClick = tmcMouseGestureEnd() == 1
                 trackingMiddleGesture = false
                 if shouldReplayClick {
-                    postPhysicalMiddleEvent(
-                        .otherMouseDown,
-                        from: event,
-                        clickState: middleGestureClickState,
-                        eventNumber: middleGestureEventNumber
-                    )
-                    postPhysicalMiddleEvent(
-                        .otherMouseUp,
-                        from: event,
-                        clickState: middleGestureClickState,
-                        eventNumber: middleGestureEventNumber
-                    )
+                    if isMouseAutoScrollEnabled,
+                       shouldStartAutoScroll(at: middleGestureQuartzLocation) {
+                        startAutoScroll(at: middleGestureScreenLocation)
+                    } else {
+                        replayMiddleClick(from: event)
+                    }
                 }
                 return nil
             }
@@ -363,9 +466,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return Unmanaged.passUnretained(event)
     }
 
+    private func isMouseDown(_ type: CGEventType) -> Bool {
+        type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown
+    }
+
+    private func isMouseUp(_ type: CGEventType) -> Bool {
+        type == .leftMouseUp || type == .rightMouseUp || type == .otherMouseUp
+    }
+
     private func cancelMiddleGesture() {
         trackingMiddleGesture = false
         tmcMouseGestureCancel()
+    }
+
+    private func replayMiddleClick(from event: CGEvent) {
+        for type in [CGEventType.otherMouseDown, .otherMouseUp] {
+            postPhysicalMiddleEvent(
+                type,
+                from: event,
+                clickState: middleGestureClickState,
+                eventNumber: middleGestureEventNumber
+            )
+        }
     }
 
     private func postPhysicalMiddleEvent(
@@ -391,6 +513,163 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         middleEvent.setIntegerValueField(.eventSourceUserData, value: syntheticEventMarker)
         middleEvent.post(tap: .cghidEventTap)
+    }
+
+    private var isAutoScrolling: Bool {
+        autoScrollTimer != nil
+    }
+
+    private func startAutoScroll(at anchor: NSPoint) {
+        stopAutoScroll()
+        autoScrollAnchor = anchor
+        autoScrollLastTick = ProcessInfo.processInfo.systemUptime
+        tmcAutoScrollBegin()
+        showAutoScrollIndicator(at: anchor)
+
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.postAutoScrollFrame()
+        }
+        autoScrollTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func stopAutoScroll() {
+        guard autoScrollTimer != nil || autoScrollIndicator != nil else { return }
+        autoScrollTimer?.invalidate()
+        autoScrollTimer = nil
+        autoScrollIndicator?.orderOut(nil)
+        autoScrollIndicator = nil
+        tmcAutoScrollEnd()
+    }
+
+    private func postAutoScrollFrame() {
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = now - autoScrollLastTick
+        autoScrollLastTick = now
+        let pointer = NSEvent.mouseLocation
+        var deltaX: Int32 = 0
+        var deltaY: Int32 = 0
+        tmcAutoScrollStep(
+            pointer.x - autoScrollAnchor.x,
+            autoScrollAnchor.y - pointer.y,
+            elapsed,
+            &deltaX,
+            &deltaY
+        )
+        guard deltaX != 0 || deltaY != 0,
+              let scrollEvent = CGEvent(
+                scrollWheelEvent2Source: nil,
+                units: .pixel,
+                wheelCount: 2,
+                wheel1: deltaY,
+                wheel2: deltaX,
+                wheel3: 0
+              )
+        else { return }
+        scrollEvent.setIntegerValueField(.eventSourceUserData, value: syntheticEventMarker)
+        scrollEvent.post(tap: .cghidEventTap)
+    }
+
+    private func showAutoScrollIndicator(at anchor: NSPoint) {
+        let size = NSSize(width: 28, height: 28)
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.isFloatingPanel = true
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.contentView = AutoScrollIndicatorView(frame: NSRect(origin: .zero, size: size))
+        panel.setFrameOrigin(NSPoint(x: anchor.x - size.width / 2, y: anchor.y - size.height / 2))
+        panel.orderFrontRegardless()
+        autoScrollIndicator = panel
+    }
+
+    /// Accessible non-interactive content starts automatic scrolling. Unknown
+    /// targets and interactive controls keep their original middle-click behavior.
+    private func shouldStartAutoScroll(at point: CGPoint) -> Bool {
+        let systemWide = AXUIElementCreateSystemWide()
+        guard accessibilityTargetIsInteractive(at: point, systemWide: systemWide) == false
+        else { return false }
+
+        let controlMargin = 6.0
+        for (x, y) in [
+            (point.x - controlMargin, point.y),
+            (point.x + controlMargin, point.y),
+            (point.x, point.y - controlMargin),
+            (point.x, point.y + controlMargin),
+        ] where accessibilityTargetIsInteractive(
+            at: CGPoint(x: x, y: y),
+            systemWide: systemWide
+        ) == true {
+            return false
+        }
+        return true
+    }
+
+    private func accessibilityTargetIsInteractive(
+        at point: CGPoint,
+        systemWide: AXUIElement
+    ) -> Bool? {
+        var hitElement: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(
+            systemWide,
+            Float(point.x),
+            Float(point.y),
+            &hitElement
+        ) == .success,
+        var element = hitElement else { return nil }
+        // Browsers can expose a text child below an interactive control, so walk parents.
+        for _ in 0..<32 {
+            var roleValue: CFTypeRef?
+            if AXUIElementCopyAttributeValue(
+                element,
+                kAXRoleAttribute as CFString,
+                &roleValue
+            ) == .success,
+            let role = roleValue as? String {
+                if role == "AXWebArea" { return false }
+                if role == NSAccessibility.Role.tabGroup.rawValue { return true }
+                if [
+                    NSAccessibility.Role.link,
+                    .button,
+                    .radioButton,
+                    .checkBox,
+                    .comboBox,
+                    .popUpButton,
+                    .menuButton,
+                    .menuItem,
+                ].contains(where: { $0.rawValue == role }) {
+                    return true
+                }
+            }
+
+            var actionNames: CFArray?
+            if AXUIElementCopyActionNames(element, &actionNames) == .success,
+               let actionNames = actionNames as? [String],
+               actionNames.contains(kAXPressAction as String) {
+                return true
+            }
+
+            var parentValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                element,
+                kAXParentAttribute as CFString,
+                &parentValue
+            ) == .success,
+            let parentValue,
+            CFGetTypeID(parentValue) == AXUIElementGetTypeID()
+            else { break }
+            element = unsafeBitCast(parentValue, to: AXUIElement.self)
+        }
+        return false
     }
 
     private func triggerMissionControl() {
@@ -451,7 +730,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if accessibilityAllowed,
            isEnabled,
            inputEventTap == nil,
-           tmcIsRunning() == 1 || isMouseMissionControlEnabled {
+           tmcIsRunning() == 1 || isMouseMissionControlEnabled || isMouseAutoScrollEnabled {
             configureInputEventTapIfPossible()
         }
         updateOperationalStatus()
@@ -480,9 +759,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyMouseMissionControlSetting()
     }
 
+    @objc private func toggleMouseAutoScroll() {
+        UserDefaults.standard.set(!isMouseAutoScrollEnabled, forKey: mouseAutoScrollKey)
+        applyMouseFeatureSettings()
+    }
+
+    @objc private func toggleMouseAutoScrollFromWindow() {
+        UserDefaults.standard.set(
+            mouseAutoScrollCheckbox.state == .on,
+            forKey: mouseAutoScrollKey
+        )
+        applyMouseFeatureSettings()
+    }
+
     private func applyMouseMissionControlSetting() {
+        applyMouseFeatureSettings()
+    }
+
+    private func applyMouseFeatureSettings() {
         tearDownInputEventTap()
-        updateMouseMissionControlControls()
+        updateMouseFeatureControls()
         if isEnabled {
             configureInputEventTapIfPossible()
         }
@@ -528,6 +824,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.bool(forKey: mouseMissionControlKey)
     }
 
+    private var isMouseAutoScrollEnabled: Bool {
+        UserDefaults.standard.bool(forKey: mouseAutoScrollKey)
+    }
+
     private var isInputEventTapActive: Bool {
         guard let tap = inputEventTap else { return false }
         return CGEvent.tapIsEnabled(tap: tap)
@@ -551,7 +851,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tearDownInputEventTap()
             tmcStop()
             updateEnabledItem(running: false)
-            updateMouseMissionControlControls()
+            updateMouseFeatureControls()
             updateStatus("Disabled")
             return
         }
@@ -559,11 +859,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         trackpadStartResult = tmcStart()
         UserDefaults.standard.set(trackpadStartResult, forKey: "diagnosticStartResult")
         configureInputEventTapIfPossible()
-        updateMouseMissionControlControls()
+        updateMouseFeatureControls()
         updateOperationalStatus()
 
         let anyFeatureRunning = tmcIsRunning() == 1
-            || (isMouseMissionControlEnabled && isInputEventTapActive)
+            || ((isMouseMissionControlEnabled || isMouseAutoScrollEnabled) && isInputEventTapActive)
         if showError && !anyFeatureRunning && trackpadStartResult != 1 {
             presentError(statusDescription(for: trackpadStartResult))
         }
@@ -574,7 +874,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let accessibilityAllowed = AXIsProcessTrusted()
         let trackpadRunning = tmcIsRunning() == 1
-        let mouseGestureRunning = isMouseMissionControlEnabled && isInputEventTapActive
+        let mouseGestureRunning = (isMouseMissionControlEnabled || isMouseAutoScrollEnabled)
+            && isInputEventTapActive
         updateEnabledItem(
             running: (trackpadRunning && accessibilityAllowed) || mouseGestureRunning
         )
@@ -597,12 +898,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.appearsDisabled = !running
     }
 
-    private func updateMouseMissionControlControls() {
-        let state: NSControl.StateValue = isMouseMissionControlEnabled ? .on : .off
-        mouseMissionControlItem?.state = state
-        mouseMissionControlCheckbox?.state = state
+    private func updateMouseFeatureControls() {
+        let missionControlState: NSControl.StateValue = isMouseMissionControlEnabled ? .on : .off
+        let autoScrollState: NSControl.StateValue = isMouseAutoScrollEnabled ? .on : .off
+        mouseMissionControlItem?.state = missionControlState
+        mouseMissionControlCheckbox?.state = missionControlState
+        mouseAutoScrollItem?.state = autoScrollState
+        mouseAutoScrollCheckbox?.state = autoScrollState
         mouseMissionControlItem?.isEnabled = isEnabled
         mouseMissionControlCheckbox?.isEnabled = isEnabled
+        mouseAutoScrollItem?.isEnabled = isEnabled
+        mouseAutoScrollCheckbox?.isEnabled = isEnabled
     }
 
     private func updateStatus(_ status: String) {

@@ -14,6 +14,12 @@ pub const MAX_RELEASE_SPREAD_MS: f64 = 80.0;
 pub const MOUSE_SWIPE_UP_THRESHOLD: f64 = 80.0;
 /// Largest movement still treated as a normal middle click.
 pub const MOUSE_CLICK_SLOP: f64 = 8.0;
+/// Pointer distance around the activation point that does not scroll.
+pub const AUTO_SCROLL_DEAD_ZONE: f64 = 12.0;
+/// Maximum automatic scrolling speed on either axis.
+pub const AUTO_SCROLL_MAX_SPEED: f64 = 1_600.0;
+/// Distance outside the dead zone that reaches maximum speed.
+pub const AUTO_SCROLL_FULL_SPEED_DISTANCE: f64 = 180.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
@@ -39,6 +45,54 @@ pub struct MouseSwipeRecognizer {
     accumulated_up: f64,
     max_distance: f64,
     triggered: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct AutoScrollEngine {
+    active: bool,
+    residual_x: f64,
+    residual_y: f64,
+}
+
+impl AutoScrollEngine {
+    pub fn begin(&mut self) {
+        self.active = true;
+        self.residual_x = 0.0;
+        self.residual_y = 0.0;
+    }
+
+    /// Returns whole-pixel scroll deltas for the elapsed frame while retaining
+    /// fractional pixels for later frames. Positive offsets mean right/down.
+    pub fn step(&mut self, offset_x: f64, offset_y: f64, elapsed_seconds: f64) -> (i32, i32) {
+        if !self.active || !elapsed_seconds.is_finite() || elapsed_seconds <= 0.0 {
+            return (0, 0);
+        }
+
+        // Avoid a large jump after the process or run loop has been suspended.
+        let elapsed_seconds = elapsed_seconds.min(0.1);
+        self.residual_x += velocity(offset_x) * elapsed_seconds;
+        self.residual_y += velocity(offset_y) * elapsed_seconds;
+
+        let whole_x = self.residual_x.trunc() as i32;
+        let whole_y = self.residual_y.trunc() as i32;
+        self.residual_x -= f64::from(whole_x);
+        self.residual_y -= f64::from(whole_y);
+        (whole_x, whole_y)
+    }
+
+    pub fn end(&mut self) {
+        *self = Self::default();
+    }
+}
+
+fn velocity(offset: f64) -> f64 {
+    if !offset.is_finite() || offset.abs() <= AUTO_SCROLL_DEAD_ZONE {
+        return 0.0;
+    }
+
+    let normalized =
+        ((offset.abs() - AUTO_SCROLL_DEAD_ZONE) / AUTO_SCROLL_FULL_SPEED_DISTANCE).min(1.0);
+    offset.signum() * AUTO_SCROLL_MAX_SPEED * normalized.powf(1.5)
 }
 
 impl MouseSwipeRecognizer {
@@ -351,5 +405,48 @@ mod tests {
         recognizer.cancel();
         assert!(!recognizer.observe(0.0, 40.0));
         assert!(!recognizer.finish());
+    }
+
+    #[test]
+    fn auto_scroll_honors_the_dead_zone_and_both_axes() {
+        let mut engine = AutoScrollEngine::default();
+        engine.begin();
+        assert_eq!(engine.step(12.0, -12.0, 1.0), (0, 0));
+        let (x, y) = engine.step(32.0, -57.0, 0.1);
+        assert!(x > 0);
+        assert!(y < 0);
+    }
+
+    #[test]
+    fn auto_scroll_speed_increases_with_distance_and_is_capped() {
+        let mut engine = AutoScrollEngine::default();
+        engine.begin();
+        let near = engine.step(57.0, 0.0, 0.1).0;
+        engine.begin();
+        let far = engine.step(102.0, 0.0, 0.1).0;
+        assert!(near > 0);
+        assert!(far > near * 2);
+        engine.begin();
+        assert_eq!(engine.step(-1_000.0, 1_000.0, 0.1), (-160, 160));
+    }
+
+    #[test]
+    fn auto_scroll_retains_fractional_pixels() {
+        let mut engine = AutoScrollEngine::default();
+        engine.begin();
+        for _ in 0..4 {
+            assert_eq!(engine.step(57.0, 0.0, 0.001), (0, 0));
+        }
+        assert_eq!(engine.step(57.0, 0.0, 0.001), (1, 0));
+    }
+
+    #[test]
+    fn auto_scroll_end_clears_state() {
+        let mut engine = AutoScrollEngine::default();
+        assert_eq!(engine.step(100.0, 100.0, 0.1), (0, 0));
+        engine.begin();
+        assert_ne!(engine.step(100.0, 100.0, 0.1), (0, 0));
+        engine.end();
+        assert_eq!(engine.step(100.0, 100.0, 0.1), (0, 0));
     }
 }
