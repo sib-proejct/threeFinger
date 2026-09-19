@@ -43,7 +43,7 @@ CLANG_MODULE_CACHE_PATH="$clang_module_cache" swift \
   scripts/generate-app-icon.swift "$iconset_dir"
 iconutil -c icns "$iconset_dir" -o "$resources_dir/AppIcon.icns"
 
-clang -target arm64-apple-macos13.0 -c macos/DockSwipe.m -o "$staging_dir/DockSwipe.o"
+clang -fobjc-arc -target arm64-apple-macos13.0 -c macos/DockSwipe.m -o "$staging_dir/DockSwipe.o"
 
 CLANG_MODULE_CACHE_PATH="$clang_module_cache" swiftc \
   -parse-as-library \

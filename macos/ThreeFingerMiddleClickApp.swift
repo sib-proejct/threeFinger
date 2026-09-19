@@ -588,7 +588,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
 
                 // Replay as middle click / auto-scroll if swipe did not trigger
-                let shouldReplayClick = middleGestureMaxDistance <= 42.0
+                let shouldReplayClick = middleGestureMaxDistance < 45.0
                 if shouldReplayClick {
                     let click = MiddleClickSnapshot(
                         quartzLocation: event.location,
@@ -918,18 +918,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ) else { continue }
             keyEvent.flags = .maskControl
             keyEvent.post(tap: .cghidEventTap)
-        }
-    }
-
-    private func triggerNextSpace() {
-        DispatchQueue.global(qos: .userInteractive).async {
-            TMCTriggerSpaceSwipe(.next)
-        }
-    }
-
-    private func triggerPreviousSpace() {
-        DispatchQueue.global(qos: .userInteractive).async {
-            TMCTriggerSpaceSwipe(.previous)
         }
     }
 
