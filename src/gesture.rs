@@ -12,8 +12,19 @@ pub const DEBOUNCE_MS: f64 = 180.0;
 pub const MAX_RELEASE_SPREAD_MS: f64 = 80.0;
 /// Upward mouse travel required while the middle button is held.
 pub const MOUSE_SWIPE_UP_THRESHOLD: f64 = 80.0;
+/// Horizontal mouse travel required while the middle button is held.
+pub const MOUSE_SWIPE_HORIZONTAL_THRESHOLD: f64 = 60.0;
 /// Largest movement still treated as a normal middle click.
 pub const MOUSE_CLICK_SLOP: f64 = 8.0;
+
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseSwipeAction {
+    None = 0,
+    MissionControl = 1,
+    NextSpace = 2,
+    PreviousSpace = 3,
+}
 /// Pointer distance around the activation point that does not scroll.
 pub const AUTO_SCROLL_DEAD_ZONE: f64 = 12.0;
 /// Maximum automatic scrolling speed on either axis.
@@ -107,11 +118,14 @@ impl MouseSwipeRecognizer {
     }
 
     /// Observes relative pointer movement, with positive `delta_up` meaning an
-    /// upward movement. Returns true once when the gesture crosses its
-    /// threshold with a predominantly vertical direction.
-    pub fn observe(&mut self, delta_x: f64, delta_up: f64) -> bool {
+    /// upward movement. Returns a non-None action once when the gesture crosses
+    /// its threshold with a predominantly directional motion:
+    /// - Mission Control: upward
+    /// - Next Space: leftward (drag left to move to the next space)
+    /// - Previous Space: rightward (drag right to move to the previous space)
+    pub fn observe(&mut self, delta_x: f64, delta_up: f64) -> MouseSwipeAction {
         if !self.active || self.triggered {
-            return false;
+            return MouseSwipeAction::None;
         }
 
         self.accumulated_x += delta_x;
@@ -125,9 +139,20 @@ impl MouseSwipeRecognizer {
             && self.accumulated_up >= self.accumulated_x.abs()
         {
             self.triggered = true;
-            return true;
+            MouseSwipeAction::MissionControl
+        } else if self.accumulated_x <= -MOUSE_SWIPE_HORIZONTAL_THRESHOLD
+            && -self.accumulated_x > self.accumulated_up.abs()
+        {
+            self.triggered = true;
+            MouseSwipeAction::NextSpace
+        } else if self.accumulated_x >= MOUSE_SWIPE_HORIZONTAL_THRESHOLD
+            && self.accumulated_x > self.accumulated_up.abs()
+        {
+            self.triggered = true;
+            MouseSwipeAction::PreviousSpace
+        } else {
+            MouseSwipeAction::None
         }
-        false
     }
 
     /// Finishes the candidate and returns true when it should be replayed as a
@@ -359,19 +384,37 @@ mod tests {
     fn mouse_swipe_triggers_at_eighty_points_but_not_seventy_nine() {
         let mut recognizer = MouseSwipeRecognizer::default();
         recognizer.begin();
-        assert!(!recognizer.observe(0.0, 79.0));
-        assert!(recognizer.observe(0.0, 1.0));
+        assert_eq!(recognizer.observe(0.0, 79.0), MouseSwipeAction::None);
+        assert_eq!(
+            recognizer.observe(0.0, 1.0),
+            MouseSwipeAction::MissionControl
+        );
     }
 
     #[test]
-    fn mouse_swipe_rejects_downward_and_horizontal_dominant_motion() {
+    fn mouse_swipe_horizontal_triggers_spaces() {
+        let mut recognizer = MouseSwipeRecognizer::default();
+        // Leftward swipe -> Next Space
+        recognizer.begin();
+        assert_eq!(recognizer.observe(-59.0, 0.0), MouseSwipeAction::None);
+        assert_eq!(recognizer.observe(-1.0, 0.0), MouseSwipeAction::NextSpace);
+
+        // Rightward swipe -> Previous Space
+        recognizer.begin();
+        assert_eq!(recognizer.observe(59.0, 0.0), MouseSwipeAction::None);
+        assert_eq!(recognizer.observe(1.0, 0.0), MouseSwipeAction::PreviousSpace);
+    }
+
+    #[test]
+    fn mouse_swipe_rejects_downward_and_ambiguous_motion() {
         let mut recognizer = MouseSwipeRecognizer::default();
         recognizer.begin();
-        assert!(!recognizer.observe(0.0, -120.0));
+        assert_eq!(recognizer.observe(0.0, -120.0), MouseSwipeAction::None);
         assert!(!recognizer.finish());
 
         recognizer.begin();
-        assert!(!recognizer.observe(81.0, 80.0));
+        // Equal up and right - ambiguous, neither strictly dominates
+        assert_eq!(recognizer.observe(80.0, -80.0), MouseSwipeAction::None);
         assert!(!recognizer.finish());
     }
 
@@ -379,23 +422,29 @@ mod tests {
     fn mouse_swipe_triggers_only_once_until_reset() {
         let mut recognizer = MouseSwipeRecognizer::default();
         recognizer.begin();
-        assert!(recognizer.observe(0.0, 80.0));
-        assert!(!recognizer.observe(0.0, 80.0));
+        assert_eq!(
+            recognizer.observe(0.0, 80.0),
+            MouseSwipeAction::MissionControl
+        );
+        assert_eq!(recognizer.observe(0.0, 80.0), MouseSwipeAction::None);
         assert!(!recognizer.finish());
 
         recognizer.begin();
-        assert!(recognizer.observe(0.0, 80.0));
+        assert_eq!(
+            recognizer.observe(0.0, 80.0),
+            MouseSwipeAction::MissionControl
+        );
     }
 
     #[test]
     fn mouse_swipe_preserves_only_clicks_inside_the_slop() {
         let mut recognizer = MouseSwipeRecognizer::default();
         recognizer.begin();
-        assert!(!recognizer.observe(4.0, 4.0));
+        assert_eq!(recognizer.observe(4.0, 4.0), MouseSwipeAction::None);
         assert!(recognizer.finish());
 
         recognizer.begin();
-        assert!(!recognizer.observe(9.0, 0.0));
+        assert_eq!(recognizer.observe(9.0, 0.0), MouseSwipeAction::None);
         assert!(!recognizer.finish());
     }
 
@@ -403,9 +452,9 @@ mod tests {
     fn mouse_swipe_cancel_clears_the_candidate() {
         let mut recognizer = MouseSwipeRecognizer::default();
         recognizer.begin();
-        assert!(!recognizer.observe(0.0, 40.0));
+        assert_eq!(recognizer.observe(0.0, 40.0), MouseSwipeAction::None);
         recognizer.cancel();
-        assert!(!recognizer.observe(0.0, 40.0));
+        assert_eq!(recognizer.observe(0.0, 40.0), MouseSwipeAction::None);
         assert!(!recognizer.finish());
     }
 

@@ -95,10 +95,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let enabledKey = "enabled"
     private let showDockIconKey = "showDockIcon"
     private let mouseMissionControlKey = "mouseMiddleSwipeMissionControl"
+    private let mouseSpacesKey = "mouseMiddleSwipeSpaces"
     private let mouseAutoScrollKey = "mouseMiddleAutoScroll"
     private var statusItem: NSStatusItem!
     private var enabledItem: NSMenuItem!
     private var mouseMissionControlItem: NSMenuItem!
+    private var mouseSpacesItem: NSMenuItem!
     private var mouseAutoScrollItem: NSMenuItem!
     private var dockIconItem: NSMenuItem!
     private var launchAtLoginItem: NSMenuItem!
@@ -109,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var diagnosticsLabel: NSTextField!
     private var enabledCheckbox: NSButton!
     private var mouseMissionControlCheckbox: NSButton!
+    private var mouseSpacesCheckbox: NSButton!
     private var mouseAutoScrollCheckbox: NSButton!
     private var launchAtLoginCheckbox: NSButton!
     private var inputEventTap: CFMachPort?
@@ -120,6 +123,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var middleGestureQuartzLocation = CGPoint.zero
     private var middleGestureScreenLocation = NSPoint.zero
     private var middleGestureFlags = CGEventFlags()
+    private var middleGestureAccumulatedX: Double = 0
+    private var middleGestureAccumulatedUp: Double = 0
+    private var middleGestureMaxDistance: Double = 0
+    private var middleGestureSwipeActive: Bool = false
+    private var middleGestureMissionControlTriggered: Bool = false
+    private var middleGestureLastDragTime: TimeInterval = 0
+    private var middleGestureVelocityX: Double = 0
+    private var middleGestureDownTime: TimeInterval = 0
     private var autoScrollTimer: Timer?
     private var autoScrollAnchor = NSPoint.zero
     private var autoScrollLastTick: TimeInterval = 0
@@ -141,6 +152,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if UserDefaults.standard.object(forKey: mouseMissionControlKey) == nil {
             UserDefaults.standard.set(true, forKey: mouseMissionControlKey)
+        }
+        if UserDefaults.standard.object(forKey: mouseSpacesKey) == nil {
+            UserDefaults.standard.set(true, forKey: mouseSpacesKey)
         }
         if UserDefaults.standard.object(forKey: mouseAutoScrollKey) == nil {
             UserDefaults.standard.set(true, forKey: mouseAutoScrollKey)
@@ -205,6 +219,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mouseMissionControlItem.target = self
         menu.addItem(mouseMissionControlItem)
 
+        mouseSpacesItem = NSMenuItem(
+            title: "Middle-button swipe: Switch Desktops",
+            action: #selector(toggleMouseSpaces),
+            keyEquivalent: ""
+        )
+        mouseSpacesItem.target = self
+        menu.addItem(mouseSpacesItem)
+
         mouseAutoScrollItem = NSMenuItem(
             title: "Middle-button click: Auto Scroll",
             action: #selector(toggleMouseAutoScroll),
@@ -238,7 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureWindow() {
         mainWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 430),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 460),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -251,7 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         titleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
 
         let descriptionLabel = NSTextField(
-            wrappingLabelWithString: "Three-finger trackpad taps become middle clicks. A physical middle click starts automatic scrolling away from links; hold and move up to open Mission Control."
+            wrappingLabelWithString: "Three-finger trackpad taps become middle clicks. A physical middle click starts automatic scrolling away from links; hold and move up for Mission Control, or left/right to switch desktops."
         )
         descriptionLabel.textColor = .secondaryLabelColor
 
@@ -272,6 +294,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             checkboxWithTitle: "Middle-button swipe: Mission Control",
             target: self,
             action: #selector(toggleMouseMissionControlFromWindow)
+        )
+        mouseSpacesCheckbox = NSButton(
+            checkboxWithTitle: "Middle-button swipe: Switch Desktops",
+            target: self,
+            action: #selector(toggleMouseSpacesFromWindow)
         )
         mouseAutoScrollCheckbox = NSButton(
             checkboxWithTitle: "Middle-button click: Auto Scroll",
@@ -305,6 +332,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             diagnosticsLabel,
             enabledCheckbox,
             mouseMissionControlCheckbox,
+            mouseSpacesCheckbox,
             mouseAutoScrollCheckbox,
             launchAtLoginCheckbox,
             permissionButton,
@@ -338,7 +366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               !inputEventTapSuspendedForSafety,
               isEnabled,
               AXIsProcessTrusted(),
-              tmcIsRunning() == 1 || isMouseMissionControlEnabled || isMouseAutoScrollEnabled
+              tmcIsRunning() == 1 || isMouseMissionControlEnabled || isMouseSpacesEnabled || isMouseAutoScrollEnabled
         else { return }
 
         let mask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
@@ -450,7 +478,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let buttonNumber = event.getIntegerValueField(.mouseEventButtonNumber)
         if isEnabled,
-           isMouseMissionControlEnabled || isMouseAutoScrollEnabled,
+           isMouseMissionControlEnabled || isMouseSpacesEnabled || isMouseAutoScrollEnabled,
            buttonNumber == centerMouseButtonNumber {
             if type == .otherMouseDown {
                 trackingMiddleGesture = true
@@ -459,6 +487,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 middleGestureQuartzLocation = event.location
                 middleGestureScreenLocation = NSEvent.mouseLocation
                 middleGestureFlags = event.flags
+                middleGestureAccumulatedX = 0
+                middleGestureAccumulatedUp = 0
+                middleGestureMaxDistance = 0
+                middleGestureSwipeActive = false
+                middleGestureMissionControlTriggered = false
+                middleGestureDownTime = ProcessInfo.processInfo.systemUptime
+                middleGestureLastDragTime = middleGestureDownTime
+                middleGestureVelocityX = 0
                 tmcMouseGestureBegin()
                 return nil
             }
@@ -466,16 +502,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if trackingMiddleGesture && type == .otherMouseDragged {
                 let deltaX = Double(event.getIntegerValueField(.mouseEventDeltaX))
                 let deltaUp = -Double(event.getIntegerValueField(.mouseEventDeltaY))
-                if tmcMouseGestureObserve(deltaX, deltaUp) == 1,
-                   isMouseMissionControlEnabled {
-                    triggerMissionControl()
+
+                let now = ProcessInfo.processInfo.systemUptime
+                let dt = now - middleGestureLastDragTime
+                middleGestureLastDragTime = now
+                if dt > 0.001 {
+                    let instantVelocityX = deltaX / dt
+                    middleGestureVelocityX = middleGestureVelocityX * 0.5 + instantVelocityX * 0.5
                 }
+
+                middleGestureAccumulatedX += deltaX
+                middleGestureAccumulatedUp += deltaUp
+                let distance = hypot(middleGestureAccumulatedX, middleGestureAccumulatedUp)
+                middleGestureMaxDistance = max(middleGestureMaxDistance, distance)
+
+                // If space swipe is already actively tracking:
+                // STREAM UPDATES 1:1 WITH PHYSICAL MOUSE MOVEMENT!
+                // The screen stays pinned to the mouse for as long as the button is held.
+                if middleGestureSwipeActive {
+                    TMCDockSwipeUpdate(deltaX)
+                    return nil
+                }
+
+                // Upward swipe for Mission Control (threshold 80 points)
+                if isMouseMissionControlEnabled,
+                   !middleGestureMissionControlTriggered,
+                   middleGestureAccumulatedUp >= 80.0,
+                   middleGestureAccumulatedUp >= abs(middleGestureAccumulatedX) * 1.4 {
+                    middleGestureMissionControlTriggered = true
+                    triggerMissionControl()
+                    return nil
+                }
+
+                // Horizontal swipe for Spaces:
+                // Threshold 45 points (protects normal wheel clicks from accidental trigger!)
+                if isMouseSpacesEnabled,
+                   !middleGestureMissionControlTriggered,
+                   abs(middleGestureAccumulatedX) >= 45.0,
+                   abs(middleGestureAccumulatedX) >= abs(middleGestureAccumulatedUp) * 1.4 {
+                    middleGestureSwipeActive = true
+                    TMCDockSwipeBegin()
+                    TMCDockSwipeUpdate(middleGestureAccumulatedX)
+                    return nil
+                }
+
                 return nil
             }
 
             if trackingMiddleGesture && type == .otherMouseUp {
-                let shouldReplayClick = tmcMouseGestureEnd() == 1
                 trackingMiddleGesture = false
+                let now = ProcessInfo.processInfo.systemUptime
+                let gestureDuration = now - middleGestureDownTime
+
+                // If swipe was triggered, but the user released very quickly (< 200ms)
+                // with small travel (< 65pt), this was physically a quick click!
+                if middleGestureSwipeActive && (gestureDuration < 0.20 && middleGestureMaxDistance < 65.0) {
+                    middleGestureSwipeActive = false
+                    TMCDockSwipeCancel()
+                    let click = MiddleClickSnapshot(
+                        quartzLocation: event.location,
+                        hitTestLocation: middleGestureQuartzLocation,
+                        screenLocation: middleGestureScreenLocation,
+                        flags: middleGestureFlags,
+                        clickState: middleGestureClickState,
+                        eventNumber: middleGestureEventNumber
+                    )
+                    if isMouseAutoScrollEnabled, !inputEventTapSuspendedForSafety {
+                        resolveMiddleClickWithoutBlockingEventTap(click, generation: inputEventGeneration)
+                    } else {
+                        replayMiddleClick(click)
+                    }
+                    return nil
+                }
+
+                if middleGestureSwipeActive {
+                    middleGestureSwipeActive = false
+                    let finalVelocityX = (now - middleGestureLastDragTime < 0.07) ? middleGestureVelocityX : 0.0
+                    TMCDockSwipeEndWithVelocity(finalVelocityX)
+                    return nil
+                }
+
+                if middleGestureMissionControlTriggered {
+                    middleGestureMissionControlTriggered = false
+                    return nil
+                }
+
+                // Replay as middle click / auto-scroll if swipe did not trigger
+                let shouldReplayClick = middleGestureMaxDistance <= 42.0
                 if shouldReplayClick {
                     let click = MiddleClickSnapshot(
                         quartzLocation: event.location,
@@ -515,6 +628,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         defaults.set(true, forKey: "diagnosticInputTapSuspended")
         convertingPhysicalClick = false
         trackingMiddleGesture = false
+        if middleGestureSwipeActive {
+            middleGestureSwipeActive = false
+            TMCDockSwipeCancel()
+        }
+        middleGestureMissionControlTriggered = false
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -533,6 +651,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func cancelMiddleGesture() {
         trackingMiddleGesture = false
+        if middleGestureSwipeActive {
+            middleGestureSwipeActive = false
+            TMCDockSwipeCancel()
+        }
+        middleGestureMissionControlTriggered = false
         tmcMouseGestureCancel()
     }
 
@@ -798,6 +921,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func triggerNextSpace() {
+        DispatchQueue.global(qos: .userInteractive).async {
+            TMCTriggerSpaceSwipe(.next)
+        }
+    }
+
+    private func triggerPreviousSpace() {
+        DispatchQueue.global(qos: .userInteractive).async {
+            TMCTriggerSpaceSwipe(.previous)
+        }
+    }
+
     @objc private func refreshDiagnostics() {
         let accessibilityAllowed = AXIsProcessTrusted()
         let frameCount = tmcFrameCount()
@@ -821,7 +956,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            isEnabled,
            inputEventTap == nil,
            !inputEventTapSuspendedForSafety,
-           tmcIsRunning() == 1 || isMouseMissionControlEnabled || isMouseAutoScrollEnabled {
+           tmcIsRunning() == 1 || isMouseMissionControlEnabled || isMouseSpacesEnabled || isMouseAutoScrollEnabled {
             configureInputEventTapIfPossible()
         }
         updateOperationalStatus()
@@ -848,6 +983,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forKey: mouseMissionControlKey
         )
         applyMouseMissionControlSetting()
+    }
+
+    @objc private func toggleMouseSpaces() {
+        UserDefaults.standard.set(!isMouseSpacesEnabled, forKey: mouseSpacesKey)
+        applyMouseFeatureSettings()
+    }
+
+    @objc private func toggleMouseSpacesFromWindow() {
+        UserDefaults.standard.set(
+            mouseSpacesCheckbox.state == .on,
+            forKey: mouseSpacesKey
+        )
+        applyMouseFeatureSettings()
     }
 
     @objc private func toggleMouseAutoScroll() {
@@ -915,6 +1063,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.bool(forKey: mouseMissionControlKey)
     }
 
+    private var isMouseSpacesEnabled: Bool {
+        UserDefaults.standard.bool(forKey: mouseSpacesKey)
+    }
+
     private var isMouseAutoScrollEnabled: Bool {
         UserDefaults.standard.bool(forKey: mouseAutoScrollKey)
     }
@@ -956,7 +1108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateOperationalStatus()
 
         let anyFeatureRunning = tmcIsRunning() == 1
-            || ((isMouseMissionControlEnabled || isMouseAutoScrollEnabled) && isInputEventTapActive)
+            || ((isMouseMissionControlEnabled || isMouseSpacesEnabled || isMouseAutoScrollEnabled) && isInputEventTapActive)
         if showError && !anyFeatureRunning && trackpadStartResult != 1 {
             presentError(statusDescription(for: trackpadStartResult))
         }
@@ -973,7 +1125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let accessibilityAllowed = AXIsProcessTrusted()
         let trackpadRunning = tmcIsRunning() == 1
-        let mouseGestureRunning = (isMouseMissionControlEnabled || isMouseAutoScrollEnabled)
+        let mouseGestureRunning = (isMouseMissionControlEnabled || isMouseSpacesEnabled || isMouseAutoScrollEnabled)
             && isInputEventTapActive
         updateEnabledItem(
             running: (trackpadRunning && accessibilityAllowed) || mouseGestureRunning
@@ -999,13 +1151,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateMouseFeatureControls() {
         let missionControlState: NSControl.StateValue = isMouseMissionControlEnabled ? .on : .off
+        let spacesState: NSControl.StateValue = isMouseSpacesEnabled ? .on : .off
         let autoScrollState: NSControl.StateValue = isMouseAutoScrollEnabled ? .on : .off
         mouseMissionControlItem?.state = missionControlState
         mouseMissionControlCheckbox?.state = missionControlState
+        mouseSpacesItem?.state = spacesState
+        mouseSpacesCheckbox?.state = spacesState
         mouseAutoScrollItem?.state = autoScrollState
         mouseAutoScrollCheckbox?.state = autoScrollState
         mouseMissionControlItem?.isEnabled = isEnabled
         mouseMissionControlCheckbox?.isEnabled = isEnabled
+        mouseSpacesItem?.isEnabled = isEnabled
+        mouseSpacesCheckbox?.isEnabled = isEnabled
         mouseAutoScrollItem?.isEnabled = isEnabled
         mouseAutoScrollCheckbox?.isEnabled = isEnabled
     }

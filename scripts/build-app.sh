@@ -43,18 +43,22 @@ CLANG_MODULE_CACHE_PATH="$clang_module_cache" swift \
   scripts/generate-app-icon.swift "$iconset_dir"
 iconutil -c icns "$iconset_dir" -o "$resources_dir/AppIcon.icns"
 
+clang -target arm64-apple-macos13.0 -c macos/DockSwipe.m -o "$staging_dir/DockSwipe.o"
+
 CLANG_MODULE_CACHE_PATH="$clang_module_cache" swiftc \
   -parse-as-library \
   -target arm64-apple-macos13.0 \
   -module-cache-path "$module_cache" \
   -sdk-module-cache-path "$sdk_module_cache" \
   -clang-scanner-module-cache-path "$clang_module_cache" \
+  -import-bridging-header macos/DockSwipe.h \
   -framework AppKit \
   -framework ApplicationServices \
   -framework ServiceManagement \
   -L target/release \
   -lthree_finger_middle_click \
   macos/ThreeFingerMiddleClickApp.swift \
+  "$staging_dir/DockSwipe.o" \
   -o "$binary_dir/3F"
 
 # Sign the completed bundle rather than relying on the executable-only ad-hoc

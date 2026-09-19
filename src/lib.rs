@@ -79,13 +79,17 @@ pub extern "C" fn tmc_mouse_gesture_begin() {
 }
 
 /// Observes relative mouse movement. `delta_up` is positive when moving up.
-/// Returns 1 exactly once when Mission Control should be triggered.
+/// Returns a gesture action code:
+/// - 0: None
+/// - 1: Mission Control (Up)
+/// - 2: Next Space / Desktop (Left)
+/// - 3: Previous Space / Desktop (Right)
 #[no_mangle]
 pub extern "C" fn tmc_mouse_gesture_observe(delta_x: f64, delta_up: f64) -> i32 {
     let mut recognizer = mouse_swipe_recognizer()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    i32::from(recognizer.observe(delta_x, delta_up))
+    recognizer.observe(delta_x, delta_up) as i32
 }
 
 /// Ends tracking. Returns 1 when the input should be replayed as a click.

@@ -1,9 +1,9 @@
 # 3F
 
 Personal macOS utility that converts a **three-finger tap or physical click** on
-the built-in trackpad into a middle mouse click, and a **middle-button upward
-mouse gesture** into Mission Control. A physical middle-button click on
-non-interactive content starts Windows-style automatic scrolling.
+the built-in trackpad into a middle mouse click, and a **middle-button mouse gesture**
+into Mission Control (drag up) or desktop space switching (drag left/right). A physical
+middle-button click on non-interactive content starts Windows-style automatic scrolling.
 
 ## What it does
 
@@ -15,8 +15,10 @@ non-interactive content starts Windows-style automatic scrolling.
   into middle-button down/up events, suppressing the original left click.
 - Posts a Core Graphics middle-click at the current cursor location.
 - Hold the physical mouse middle button and move upward at least 80 points to
-  open Mission Control. The pointer stays at the moved position. A click within
-  8 points over an accessible interactive control remains a normal middle click.
+  open Mission Control, or move left/right at least 60 points to switch desktops
+  (like a trackpad swipe: drag left for next desktop, drag right for previous desktop).
+  The pointer stays at the moved position. A click within 8 points over an accessible
+  interactive control remains a normal middle click.
 - Click the physical mouse middle button elsewhere to show a four-way anchor.
   Moving the pointer outside its 12-point dead zone scrolls vertically in the
   reverse direction and horizontally in the same direction, accelerating as
@@ -171,7 +173,9 @@ Control을 여는 개인용 macOS 유틸리티입니다. 대화형 컨트롤이 
   버튼 down/up 이벤트로 바꿉니다.
 - 현재 커서 위치에 Core Graphics 가운데 클릭을 전송합니다.
 - 마우스 가운데 버튼을 누른 채 위로 80pt 이상 움직이면 Mission Control을
-  열고 커서는 이동한 위치에 그대로 둡니다. 손쉬운 사용 API에서 대화형
+  열고, 좌/우로 80pt 이상 움직이면 트랙패드처럼 데스크탑 화면(Spaces)을
+  전환합니다 (왼쪽 드래그 시 다음 데스크탑, 오른쪽 드래그 시 이전 데스크탑).
+  커서는 이동한 위치에 그대로 둡니다. 손쉬운 사용 API에서 대화형
   컨트롤로 확인되는 위치의 8pt 이내 클릭은 일반 가운데 클릭으로 유지됩니다.
 - 그 밖의 위치에서 물리 가운데 버튼을 클릭하면 사방향 기준점이 나타납니다.
   포인터를 기준점의 12pt 데드존 밖으로 움직이면 멀어질수록 더 빠르게 포인터
@@ -238,9 +242,9 @@ make dmg
    선택한 다음, 손쉬운 사용 권한을 허용합니다.
 5. 상태 창에서 엔진 실행 상태, 손쉬운 사용 권한, 수신된 입력 프레임,
    활성 손가락 수, 생성된 가운데 클릭 수를 확인하고 **Enabled**,
-   **Middle-button swipe: Mission Control**, **Launch at Login**을 제어할 수
-   있습니다. **Middle-button click: Auto Scroll**로 자동 스크롤도 켜거나
-   끌 수 있습니다.
+   **Middle-button swipe: Mission Control**, **Middle-button swipe: Switch Desktops**,
+   **Launch at Login**을 제어할 수 있습니다. **Middle-button click: Auto Scroll**로
+   자동 스크롤도 켜거나 끌 수 있습니다.
 6. 창을 닫아도 앱은 계속 실행됩니다. 화면 오른쪽 상단의 `3F` 메뉴 막대
    항목으로 다시 열 수 있습니다. Dock 아이콘은 기본적으로 숨겨져 있으며,
    필요하면 `3F` 메뉴에서 **Show Dock Icon**을 켜세요.
