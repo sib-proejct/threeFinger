@@ -116,7 +116,8 @@ pub extern "C" fn tmc_auto_scroll_begin() {
 }
 
 /// Computes whole-pixel scroll deltas for one timer frame.
-/// Positive offsets point right/down. Null output pointers are allowed.
+/// Positive offsets point right/down. Horizontal output uses the opposite sign;
+/// vertical output uses the same sign. Null output pointers are allowed.
 #[no_mangle]
 pub extern "C" fn tmc_auto_scroll_step(
     offset_x: f64,

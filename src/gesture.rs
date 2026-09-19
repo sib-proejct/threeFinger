@@ -62,7 +62,9 @@ impl AutoScrollEngine {
     }
 
     /// Returns whole-pixel scroll deltas for the elapsed frame while retaining
-    /// fractional pixels for later frames. Positive offsets mean right/down.
+    /// fractional pixels for later frames. Positive offsets mean right/down;
+    /// horizontal scrolling is reversed while vertical scrolling follows the
+    /// offset direction.
     pub fn step(&mut self, offset_x: f64, offset_y: f64, elapsed_seconds: f64) -> (i32, i32) {
         if !self.active || !elapsed_seconds.is_finite() || elapsed_seconds <= 0.0 {
             return (0, 0);
@@ -70,7 +72,7 @@ impl AutoScrollEngine {
 
         // Avoid a large jump after the process or run loop has been suspended.
         let elapsed_seconds = elapsed_seconds.min(0.1);
-        self.residual_x += velocity(offset_x) * elapsed_seconds;
+        self.residual_x -= velocity(offset_x) * elapsed_seconds;
         self.residual_y += velocity(offset_y) * elapsed_seconds;
 
         let whole_x = self.residual_x.trunc() as i32;
@@ -408,13 +410,18 @@ mod tests {
     }
 
     #[test]
-    fn auto_scroll_honors_the_dead_zone_and_both_axes() {
+    fn auto_scroll_honors_the_dead_zone_and_axis_directions() {
         let mut engine = AutoScrollEngine::default();
         engine.begin();
         assert_eq!(engine.step(12.0, -12.0, 1.0), (0, 0));
         let (x, y) = engine.step(32.0, -57.0, 0.1);
-        assert!(x > 0);
+        assert!(x < 0);
         assert!(y < 0);
+
+        engine.begin();
+        let (x, y) = engine.step(-32.0, 57.0, 0.1);
+        assert!(x > 0);
+        assert!(y > 0);
     }
 
     #[test]
@@ -424,10 +431,10 @@ mod tests {
         let near = engine.step(57.0, 0.0, 0.1).0;
         engine.begin();
         let far = engine.step(102.0, 0.0, 0.1).0;
-        assert!(near > 0);
-        assert!(far > near * 2);
+        assert!(near < 0);
+        assert!(far < near * 2);
         engine.begin();
-        assert_eq!(engine.step(-1_000.0, 1_000.0, 0.1), (-160, 160));
+        assert_eq!(engine.step(-1_000.0, 1_000.0, 0.1), (160, 160));
     }
 
     #[test]
@@ -437,7 +444,7 @@ mod tests {
         for _ in 0..4 {
             assert_eq!(engine.step(57.0, 0.0, 0.001), (0, 0));
         }
-        assert_eq!(engine.step(57.0, 0.0, 0.001), (1, 0));
+        assert_eq!(engine.step(57.0, 0.0, 0.001), (-1, 0));
     }
 
     #[test]

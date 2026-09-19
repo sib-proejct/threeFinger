@@ -18,10 +18,11 @@ non-interactive content starts Windows-style automatic scrolling.
   open Mission Control. The pointer stays at the moved position. A click within
   8 points over an accessible interactive control remains a normal middle click.
 - Click the physical mouse middle button elsewhere to show a four-way anchor.
-  Moving the pointer outside its 12-point dead zone scrolls vertically and
-  horizontally in the reverse direction, accelerating as the pointer moves
-  farther away; any mouse button or Escape stops scrolling. Accessible
-  non-interactive content, including plain text, can start automatic scrolling.
+  Moving the pointer outside its 12-point dead zone scrolls vertically in the
+  reverse direction and horizontally in the same direction, accelerating as
+  the pointer moves farther away; any mouse button or Escape stops scrolling.
+  Accessible non-interactive content, including plain text, can start automatic
+  scrolling.
   Links, tabs, buttons, and other pressable controls keep their original middle
   click. If an app does not expose the target through the macOS Accessibility
   API, 3F preserves the original middle click.
@@ -174,11 +175,11 @@ Control을 여는 개인용 macOS 유틸리티입니다. 대화형 컨트롤이 
   컨트롤로 확인되는 위치의 8pt 이내 클릭은 일반 가운데 클릭으로 유지됩니다.
 - 그 밖의 위치에서 물리 가운데 버튼을 클릭하면 사방향 기준점이 나타납니다.
   포인터를 기준점의 12pt 데드존 밖으로 움직이면 멀어질수록 더 빠르게 포인터
-  이동과 반대 방향으로 상하·좌우 자동 스크롤하며, 아무 마우스 버튼이나
-  Escape를 누르면 종료됩니다. 일반 텍스트를 포함해 손쉬운 사용 API에서
-  비대화형 콘텐츠로 확인되는 위치에서 시작할 수 있습니다. 링크, 탭, 버튼 등
-  누를 수 있는 컨트롤에서는 원래 가운데 클릭을 유지합니다. 앱이 클릭 대상을
-  제공하지 않으면 3F는 원래 가운데 클릭을 유지합니다.
+  이동의 반대 방향으로 상하 스크롤하고 같은 방향으로 좌우 스크롤하며, 아무
+  마우스 버튼이나 Escape를 누르면 종료됩니다. 일반 텍스트를 포함해 손쉬운
+  사용 API에서 비대화형 콘텐츠로 확인되는 위치에서 시작할 수 있습니다. 링크,
+  탭, 버튼 등 누를 수 있는 컨트롤에서는 원래 가운데 클릭을 유지합니다. 앱이
+  클릭 대상을 제공하지 않으면 3F는 원래 가운데 클릭을 유지합니다.
 - 메뉴 막대에서 **Enabled**, 마우스 제스처, 자동 스크롤,
   **Launch at Login**, **Quit**을 제공합니다.
 

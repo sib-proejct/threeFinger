@@ -4,6 +4,7 @@ set -euo pipefail
 project_root="${0:A:h:h}"
 dist_dir="$project_root/dist"
 final_bundle="$dist_dir/3F.app"
+legacy_bundle="$dist_dir/ThreeFingerMiddleClick.app"
 module_cache="$project_root/target/swift-module-cache"
 clang_module_cache="$project_root/target/clang-module-cache"
 sdk_module_cache="$project_root/target/sdk-module-cache"
@@ -21,6 +22,10 @@ fi
 
 cargo build --release
 mkdir -p "$dist_dir" "$module_cache" "$clang_module_cache" "$sdk_module_cache"
+# Releases before the 3F rename used the same bundle identifier under a
+# different app name. Keeping that stale bundle can make LaunchServices open
+# the wrong executable and can confuse Accessibility permission resolution.
+rm -rf "$legacy_bundle"
 staging_dir="$(mktemp -d "$dist_dir/.3F.build.XXXXXX")"
 trap 'rm -rf "$staging_dir"' EXIT
 

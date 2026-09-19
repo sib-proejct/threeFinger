@@ -28,6 +28,15 @@ private let syntheticEventMarker: Int64 = 0x33464D43 // "3FMC"
 private let centerMouseButtonNumber = Int64(CGMouseButton.center.rawValue)
 private let escapeKeyCode: Int64 = 53
 
+private struct MiddleClickSnapshot {
+    let quartzLocation: CGPoint
+    let hitTestLocation: CGPoint
+    let screenLocation: NSPoint
+    let flags: CGEventFlags
+    let clickState: Int64
+    let eventNumber: Int64
+}
+
 private final class AutoScrollIndicatorView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let circle = bounds.insetBy(dx: 1.5, dy: 1.5)
@@ -110,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var middleGestureEventNumber: Int64 = 0
     private var middleGestureQuartzLocation = CGPoint.zero
     private var middleGestureScreenLocation = NSPoint.zero
+    private var middleGestureFlags = CGEventFlags()
     private var autoScrollTimer: Timer?
     private var autoScrollAnchor = NSPoint.zero
     private var autoScrollLastTick: TimeInterval = 0
@@ -117,8 +127,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellingAutoScrollButton: Int64?
     private var trackpadStartResult: Int32 = 0
     private var diagnosticsTimer: Timer?
+    private let accessibilityHitTestQueue = DispatchQueue(
+        label: "local.threefingermiddleclick.accessibility-hit-test",
+        qos: .userInitiated
+    )
+    private var inputEventTapSuspendedForSafety = false
+    private var inputEventGeneration: UInt64 = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UserDefaults.standard.set(false, forKey: "diagnosticInputTapSuspended")
         if UserDefaults.standard.object(forKey: enabledKey) == nil {
             UserDefaults.standard.set(true, forKey: enabledKey)
         }
@@ -318,6 +335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureInputEventTapIfPossible() {
         guard inputEventTap == nil,
+              !inputEventTapSuspendedForSafety,
               isEnabled,
               AXIsProcessTrusted(),
               tmcIsRunning() == 1 || isMouseMissionControlEnabled || isMouseAutoScrollEnabled
@@ -353,6 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Besides minimizing the app's input scope, this prevents stale conversion
     // state from surviving an enable/disable cycle.
     private func tearDownInputEventTap() {
+        inputEventGeneration &+= 1
         convertingPhysicalClick = false
         cancelMiddleGesture()
         stopAutoScroll()
@@ -371,7 +390,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         type: CGEventType,
         event: CGEvent
     ) -> Unmanaged<CGEvent>? {
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        if type == .tapDisabledByTimeout {
+            suspendInputEventTapAfterTimeout()
+            return Unmanaged.passUnretained(event)
+        }
+
+        if type == .tapDisabledByUserInput {
             if let tap = inputEventTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
@@ -434,6 +458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 middleGestureEventNumber = event.getIntegerValueField(.mouseEventNumber)
                 middleGestureQuartzLocation = event.location
                 middleGestureScreenLocation = NSEvent.mouseLocation
+                middleGestureFlags = event.flags
                 tmcMouseGestureBegin()
                 return nil
             }
@@ -452,11 +477,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let shouldReplayClick = tmcMouseGestureEnd() == 1
                 trackingMiddleGesture = false
                 if shouldReplayClick {
+                    let click = MiddleClickSnapshot(
+                        quartzLocation: event.location,
+                        hitTestLocation: middleGestureQuartzLocation,
+                        screenLocation: middleGestureScreenLocation,
+                        flags: middleGestureFlags,
+                        clickState: middleGestureClickState,
+                        eventNumber: middleGestureEventNumber
+                    )
                     if isMouseAutoScrollEnabled,
-                       shouldStartAutoScroll(at: middleGestureQuartzLocation) {
-                        startAutoScroll(at: middleGestureScreenLocation)
+                       !inputEventTapSuspendedForSafety {
+                        resolveMiddleClickWithoutBlockingEventTap(
+                            click,
+                            generation: inputEventGeneration
+                        )
                     } else {
-                        replayMiddleClick(from: event)
+                        replayMiddleClick(click)
                     }
                 }
                 return nil
@@ -464,6 +500,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return Unmanaged.passUnretained(event)
+    }
+
+    // A filtering event tap sits in the system-wide input path. If macOS
+    // disables it for taking too long, leave it disabled and tear it down on
+    // the next run-loop turn. The user can toggle Enabled off and on to retry.
+    private func suspendInputEventTapAfterTimeout() {
+        inputEventTapSuspendedForSafety = true
+        let defaults = UserDefaults.standard
+        defaults.set(
+            defaults.integer(forKey: "diagnosticEventTapTimeoutCount") + 1,
+            forKey: "diagnosticEventTapTimeoutCount"
+        )
+        defaults.set(true, forKey: "diagnosticInputTapSuspended")
+        convertingPhysicalClick = false
+        trackingMiddleGesture = false
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.tearDownInputEventTap()
+            self.updateOperationalStatus()
+        }
     }
 
     private func isMouseDown(_ type: CGEventType) -> Bool {
@@ -479,14 +536,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tmcMouseGestureCancel()
     }
 
-    private func replayMiddleClick(from event: CGEvent) {
+    private func replayMiddleClick(_ click: MiddleClickSnapshot) {
         for type in [CGEventType.otherMouseDown, .otherMouseUp] {
             postPhysicalMiddleEvent(
                 type,
-                from: event,
-                clickState: middleGestureClickState,
-                eventNumber: middleGestureEventNumber
+                at: click.quartzLocation,
+                flags: click.flags,
+                clickState: click.clickState,
+                eventNumber: click.eventNumber
             )
+        }
+    }
+
+    private func resolveMiddleClickWithoutBlockingEventTap(
+        _ click: MiddleClickSnapshot,
+        generation: UInt64
+    ) {
+        accessibilityHitTestQueue.async { [weak self] in
+            guard let self else { return }
+            let shouldAutoScroll = self.shouldStartAutoScroll(at: click.hitTestLocation)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if shouldAutoScroll,
+                   self.inputEventGeneration == generation,
+                   self.isEnabled,
+                   self.isMouseAutoScrollEnabled,
+                   !self.inputEventTapSuspendedForSafety {
+                    self.startAutoScroll(at: click.screenLocation)
+                } else {
+                    self.replayMiddleClick(click)
+                }
+            }
         }
     }
 
@@ -496,21 +576,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clickState: Int64? = nil,
         eventNumber: Int64? = nil
     ) {
+        postPhysicalMiddleEvent(
+            type,
+            at: event.location,
+            flags: event.flags,
+            clickState: clickState ?? event.getIntegerValueField(.mouseEventClickState),
+            eventNumber: eventNumber ?? event.getIntegerValueField(.mouseEventNumber)
+        )
+    }
+
+    private func postPhysicalMiddleEvent(
+        _ type: CGEventType,
+        at location: CGPoint,
+        flags: CGEventFlags,
+        clickState: Int64,
+        eventNumber: Int64
+    ) {
         guard let middleEvent = CGEvent(
             mouseEventSource: nil,
             mouseType: type,
-            mouseCursorPosition: event.location,
+            mouseCursorPosition: location,
             mouseButton: .center
         ) else { return }
-        middleEvent.flags = event.flags
-        middleEvent.setIntegerValueField(
-            .mouseEventClickState,
-            value: clickState ?? event.getIntegerValueField(.mouseEventClickState)
-        )
-        middleEvent.setIntegerValueField(
-            .mouseEventNumber,
-            value: eventNumber ?? event.getIntegerValueField(.mouseEventNumber)
-        )
+        middleEvent.flags = flags
+        middleEvent.setIntegerValueField(.mouseEventClickState, value: clickState)
+        middleEvent.setIntegerValueField(.mouseEventNumber, value: eventNumber)
         middleEvent.setIntegerValueField(.eventSourceUserData, value: syntheticEventMarker)
         middleEvent.post(tap: .cghidEventTap)
     }
@@ -730,6 +820,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if accessibilityAllowed,
            isEnabled,
            inputEventTap == nil,
+           !inputEventTapSuspendedForSafety,
            tmcIsRunning() == 1 || isMouseMissionControlEnabled || isMouseAutoScrollEnabled {
             configureInputEventTapIfPossible()
         }
@@ -848,6 +939,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applyEnabledState(showError: Bool) {
         if !isEnabled {
+            inputEventTapSuspendedForSafety = false
+            UserDefaults.standard.set(false, forKey: "diagnosticInputTapSuspended")
             tearDownInputEventTap()
             tmcStop()
             updateEnabledItem(running: false)
@@ -871,6 +964,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateOperationalStatus() {
         guard isEnabled else { return }
+
+        if inputEventTapSuspendedForSafety {
+            updateEnabledItem(running: false)
+            updateStatus("Input filter paused after timeout · Toggle Enabled to retry")
+            return
+        }
 
         let accessibilityAllowed = AXIsProcessTrusted()
         let trackpadRunning = tmcIsRunning() == 1
